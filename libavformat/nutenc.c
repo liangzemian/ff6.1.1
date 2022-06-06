@@ -789,11 +789,12 @@ static int get_needed_flags(NUTContext *nut, StreamContext *nus, FrameCode *fc,
         flags |= FLAG_CHECKSUM;
     if (FFABS(pkt->pts - nus->last_pts) > nus->max_pts_distance)
         flags |= FLAG_CHECKSUM;
-    if (pkt->size < nut->header_len[fc->header_idx] ||
-        (pkt->size > 4096 && fc->header_idx)        ||
-        memcmp(pkt->data, nut->header[fc->header_idx],
-               nut->header_len[fc->header_idx]))
-        flags |= FLAG_HEADER_IDX;
+    if (fc->header_idx)
+        if (pkt->size < nut->header_len[fc->header_idx] ||
+            pkt->size > 4096                            ||
+            memcmp(pkt->data, nut->header    [fc->header_idx],
+                              nut->header_len[fc->header_idx]))
+            flags |= FLAG_HEADER_IDX;
 
     return flags | (fc->flags & FLAG_CODED);
 }
@@ -1170,9 +1171,12 @@ static int nut_write_trailer(AVFormatContext *s)
     while (nut->header_count < 3)
         write_headers(s, bc);
 
+    if (!nut->sp_count)
+        return 0;
+
     ret = avio_open_dyn_buf(&dyn_bc);
-    if (ret >= 0 && nut->sp_count) {
-        av_assert1(nut->write_index);
+    if (ret >= 0) {
+        av_assert1(nut->write_index); // sp_count should be 0 if no index is going to be written
         write_index(nut, dyn_bc);
         put_packet(nut, bc, dyn_bc, 1, INDEX_STARTCODE);
     }

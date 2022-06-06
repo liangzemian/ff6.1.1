@@ -27,6 +27,7 @@
 #include "avformat.h"
 #include "internal.h"
 #include "subtitles.h"
+#include "avio_internal.h"
 #include "libavcodec/internal.h"
 #include "libavutil/avstring.h"
 #include "libavutil/bprint.h"
@@ -36,7 +37,7 @@ typedef struct {
     FFDemuxSubtitlesQueue q;
 } SubViewerContext;
 
-static int subviewer_probe(AVProbeData *p)
+static int subviewer_probe(const AVProbeData *p)
 {
     char c;
     const unsigned char *ptr = p->buf;
@@ -78,6 +79,11 @@ static int subviewer_read_header(AVFormatContext *s)
 
     if (!st)
         return AVERROR(ENOMEM);
+    res = ffio_ensure_seekback(s->pb, 3);
+    if (res < 0)
+        return res;
+    if (avio_rb24(s->pb) != 0xefbbbf)
+        avio_seek(s->pb, -3, SEEK_CUR);
     avpriv_set_pts_info(st, 64, 1, 100);
     st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
     st->codecpar->codec_id   = AV_CODEC_ID_SUBVIEWER;
@@ -132,6 +138,10 @@ static int subviewer_read_header(AVFormatContext *s)
             new_event = 1;
             pos = avio_tell(s->pb);
         } else if (*line) {
+            if (pts_start == AV_NOPTS_VALUE) {
+                res = AVERROR_INVALIDDATA;
+                goto end;
+            }
             if (!new_event) {
                 sub = ff_subtitles_queue_insert(&subviewer->q, "\n", 1, 1);
                 if (!sub) {
@@ -156,6 +166,8 @@ static int subviewer_read_header(AVFormatContext *s)
     ff_subtitles_queue_finalize(s, &subviewer->q);
 
 end:
+    if (res < 0)
+        ff_subtitles_queue_clean(&subviewer->q);
     av_bprint_finalize(&header, NULL);
     return res;
 }

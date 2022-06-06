@@ -566,7 +566,7 @@ static void fill_buffer(AVIOContext *s)
     }
 
     /* make buffer smaller in case it ended up large after probing */
-    if (s->read_packet && s->orig_buffer_size && s->buffer_size > s->orig_buffer_size) {
+    if (s->read_packet && s->orig_buffer_size && s->buffer_size > s->orig_buffer_size && len >= s->orig_buffer_size) {
         if (dst == s->buffer && s->buf_ptr != dst) {
             int ret = ffio_set_buf_size(s, s->orig_buffer_size);
             if (ret < 0)
@@ -574,7 +574,6 @@ static void fill_buffer(AVIOContext *s)
 
             s->checksum_ptr = dst = s->buffer;
         }
-        av_assert0(len >= s->orig_buffer_size);
         len = s->orig_buffer_size;
     }
 
@@ -1162,6 +1161,8 @@ int ffio_open_whitelist(AVIOContext **s, const char *filename, int flags,
     URLContext *h;
     int err;
 
+    *s = NULL;
+
     err = ffurl_open_whitelist(&h, filename, flags, int_cb, options, whitelist, blacklist, NULL);
     if (err < 0)
         return err;
@@ -1179,12 +1180,6 @@ int avio_open2(AVIOContext **s, const char *filename, int flags,
     return ffio_open_whitelist(s, filename, flags, int_cb, options, NULL, NULL);
 }
 
-int ffio_open2_wrapper(struct AVFormatContext *s, AVIOContext **pb, const char *url, int flags,
-                       const AVIOInterruptCB *int_cb, AVDictionary **options)
-{
-    return ffio_open_whitelist(pb, url, flags, int_cb, options, s->protocol_whitelist, s->protocol_blacklist);
-}
-
 int avio_close(AVIOContext *s)
 {
     AVIOInternal *internal;
@@ -1200,9 +1195,9 @@ int avio_close(AVIOContext *s)
     av_freep(&s->opaque);
     av_freep(&s->buffer);
     if (s->write_flag)
-        av_log(s, AV_LOG_DEBUG, "Statistics: %d seeks, %d writeouts\n", s->seek_count, s->writeout_count);
+        av_log(s, AV_LOG_VERBOSE, "Statistics: %d seeks, %d writeouts\n", s->seek_count, s->writeout_count);
     else
-        av_log(s, AV_LOG_DEBUG, "Statistics: %"PRId64" bytes read, %d seeks\n", s->bytes_read, s->seek_count);
+        av_log(s, AV_LOG_VERBOSE, "Statistics: %"PRId64" bytes read, %d seeks\n", s->bytes_read, s->seek_count);
     av_opt_free(s);
 
     avio_context_free(&s);
@@ -1308,7 +1303,7 @@ static int dyn_buf_write(void *opaque, uint8_t *buf, int buf_size)
     unsigned new_size, new_allocated_size;
 
     /* reallocate buffer if needed */
-    new_size = d->pos + buf_size;
+    new_size = (unsigned)d->pos + buf_size;
     new_allocated_size = d->allocated_size;
     if (new_size < d->pos || new_size > INT_MAX/2)
         return -1;

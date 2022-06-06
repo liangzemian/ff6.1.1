@@ -149,7 +149,7 @@ static int filter_vertically_##name(AVFilterContext *ctx, void *arg, int jobnr, 
                                                                                               \
         src = s->buffer + x;                                                                  \
         ptr = buffer + x;                                                                     \
-        for (i = 0; i <= radius; i++) {                                                       \
+        for (i = 0; i + radius < height && i <= radius; i++) {                                \
             acc += src[(i + radius) * width];                                                 \
             count++;                                                                          \
             ptr[i * linesize] = acc / count;                                                  \
@@ -242,7 +242,7 @@ static int query_formats(AVFilterContext *ctx)
         AV_PIX_FMT_GBRP, AV_PIX_FMT_GBRP9, AV_PIX_FMT_GBRP10,
         AV_PIX_FMT_GBRP12, AV_PIX_FMT_GBRP14, AV_PIX_FMT_GBRP16,
         AV_PIX_FMT_GBRAP, AV_PIX_FMT_GBRAP10, AV_PIX_FMT_GBRAP12, AV_PIX_FMT_GBRAP16,
-        AV_PIX_FMT_GRAY8, AV_PIX_FMT_GRAY9, AV_PIX_FMT_GRAY10, AV_PIX_FMT_GRAY12, AV_PIX_FMT_GRAY16,
+        AV_PIX_FMT_GRAY8, AV_PIX_FMT_GRAY9, AV_PIX_FMT_GRAY10, AV_PIX_FMT_GRAY12, AV_PIX_FMT_GRAY14, AV_PIX_FMT_GRAY16,
         AV_PIX_FMT_NONE
     };
 

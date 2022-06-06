@@ -36,6 +36,7 @@
 #include "libavutil/bprint.h"
 #include "libavutil/dict.h"
 #include "libavutil/intreadwrite.h"
+#include "libavcodec/png.h"
 #include "avio_internal.h"
 #include "internal.h"
 #include "id3v1.h"
@@ -590,7 +591,7 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
                       int isv34)
 {
     int enc, pic_type;
-    char mimetype[64];
+    char mimetype[64] = {0};
     const CodecMime *mime     = ff_id3v2_mime_tags;
     enum AVCodecID id         = AV_CODEC_ID_NONE;
     ID3v2ExtraMetaAPIC *apic  = NULL;
@@ -610,9 +611,14 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
 
     /* mimetype */
     if (isv34) {
-        taglen -= avio_get_str(pb, taglen, mimetype, sizeof(mimetype));
+        int ret = avio_get_str(pb, taglen, mimetype, sizeof(mimetype));
+        if (ret < 0 || ret >= taglen)
+            goto fail;
+        taglen -= ret;
     } else {
-        avio_read(pb, mimetype, 3);
+        if (avio_read(pb, mimetype, 3) < 0)
+            goto fail;
+
         mimetype[3] = 0;
         taglen    -= 3;
     }
@@ -823,7 +829,7 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
     int isv34, unsync;
     unsigned tlen;
     char tag[5];
-    int64_t next, end = avio_tell(pb) + len;
+    int64_t next, end = avio_tell(pb);
     int taghdrlen;
     const char *reason = NULL;
     AVIOContext pb_local;
@@ -834,6 +840,10 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
     unsigned char *uncompressed_buffer = NULL;
     av_unused int uncompressed_buffer_size = 0;
     const char *comm_frame;
+
+    if (end > INT64_MAX - len - 10)
+        return;
+    end += len;
 
     av_log(s, AV_LOG_DEBUG, "id3v2 ver:%d flags:%02X len:%d\n", version, flags, len);
 
@@ -1003,6 +1013,9 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
 
                     av_log(s, AV_LOG_DEBUG, "Compresssed frame %s tlen=%d dlen=%ld\n", tag, tlen, dlen);
 
+                    if (tlen <= 0)
+                        goto seek;
+
                     av_fast_malloc(&uncompressed_buffer, &uncompressed_buffer_size, dlen);
                     if (!uncompressed_buffer) {
                         av_log(s, AV_LOG_ERROR, "Failed to alloc %ld bytes\n", dlen);
@@ -1156,7 +1169,7 @@ int ff_id3v2_parse_apic(AVFormatContext *s, ID3v2ExtraMeta **extra_meta)
         st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
         st->codecpar->codec_id   = apic->id;
 
-        if (AV_RB64(apic->buf->data) == 0x89504e470d0a1a0a)
+        if (AV_RB64(apic->buf->data) == PNGSIG)
             st->codecpar->codec_id = AV_CODEC_ID_PNG;
 
         if (apic->description[0])
@@ -1260,8 +1273,6 @@ int ff_id3v2_parse_priv_dict(AVDictionary **metadata, ID3v2ExtraMeta **extra_met
             }
 
             if ((ret = av_dict_set(metadata, key, escaped, dict_flags)) < 0) {
-                av_free(key);
-                av_free(escaped);
                 return ret;
             }
         }

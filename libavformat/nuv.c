@@ -47,7 +47,7 @@ typedef enum {
     NUV_MYTHEXT   = 'X'
 } nuv_frametype;
 
-static int nuv_probe(AVProbeData *p)
+static int nuv_probe(const AVProbeData *p)
 {
     if (!memcmp(p->buf, "NuppelVideo", 12))
         return AVPROBE_SCORE_MAX;
@@ -121,6 +121,10 @@ static int get_codec_data(AVFormatContext *s, AVIOContext *pb, AVStream *vst,
                 ast->codecpar->bits_per_coded_sample = avio_rl32(pb);
                 ast->codecpar->channels              = avio_rl32(pb);
                 ast->codecpar->channel_layout        = 0;
+                if (ast->codecpar->channels <= 0) {
+                    av_log(s, AV_LOG_ERROR, "Invalid channels %d\n", ast->codecpar->channels);
+                    return AVERROR_INVALIDDATA;
+                }
 
                 id = ff_wav_codec_get_id(ast->codecpar->codec_tag,
                                          ast->codecpar->bits_per_coded_sample);

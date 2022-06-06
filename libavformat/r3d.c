@@ -326,7 +326,8 @@ static int r3d_read_reda(AVFormatContext *s, AVPacket *pkt, Atom *atom)
 
     pkt->stream_index = 1;
     pkt->dts = dts;
-    if (st->codecpar->sample_rate)
+
+    if (st->codecpar->sample_rate && samples > 0)
         pkt->duration = av_rescale(samples, st->time_base.den, st->codecpar->sample_rate);
     av_log(s, AV_LOG_TRACE, "pkt dts %"PRId64" duration %"PRId64" samples %d sample rate %d\n",
             pkt->dts, pkt->duration, samples, st->codecpar->sample_rate);
@@ -368,7 +369,7 @@ static int r3d_read_packet(AVFormatContext *s, AVPacket *pkt)
     return err;
 }
 
-static int r3d_probe(AVProbeData *p)
+static int r3d_probe(const AVProbeData *p)
 {
     if (AV_RL32(p->buf + 4) == MKTAG('R','E','D','1'))
         return AVPROBE_SCORE_MAX;

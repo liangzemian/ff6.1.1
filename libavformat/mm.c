@@ -58,7 +58,7 @@ typedef struct MmDemuxContext {
   unsigned int audio_pts, video_pts;
 } MmDemuxContext;
 
-static int probe(AVProbeData *p)
+static int probe(const AVProbeData *p)
 {
     int len, type, fps, w, h;
     if (p->buf_size < MM_HEADER_LEN_AV + MM_PREAMBLE_SIZE)
@@ -174,6 +174,8 @@ static int read_packet(AVFormatContext *s,
             return 0;
 
         case MM_TYPE_AUDIO :
+            if (s->nb_streams < 2)
+                return AVERROR_INVALIDDATA;
             if (av_get_packet(s->pb, pkt, length)<0)
                 return AVERROR(ENOMEM);
             pkt->stream_index = 1;

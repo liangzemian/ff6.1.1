@@ -37,7 +37,7 @@
 #include "thread.h"
 
 typedef struct RowContext {
-    DECLARE_ALIGNED(16, int16_t, blocks)[12][64];
+    DECLARE_ALIGNED(32, int16_t, blocks)[12][64];
     int luma_scale[64];
     int chroma_scale[64];
     GetBitContext gb;
@@ -67,6 +67,8 @@ typedef struct DNXHDContext {
     const CIDEntry *cid_table;
     int bit_depth; // 8, 10, 12 or 0 if not initialized at all.
     int is_444;
+    int alpha;
+    int lla;
     int mbaff;
     int act;
     int (*decode_dct_block)(const struct DNXHDContext *ctx,
@@ -109,6 +111,7 @@ static av_cold int dnxhd_decode_init(AVCodecContext *avctx)
 
 static int dnxhd_init_vlc(DNXHDContext *ctx, uint32_t cid, int bitdepth)
 {
+    int ret;
     if (cid != ctx->cid) {
         int index;
 
@@ -128,19 +131,26 @@ static int dnxhd_init_vlc(DNXHDContext *ctx, uint32_t cid, int bitdepth)
         ff_free_vlc(&ctx->dc_vlc);
         ff_free_vlc(&ctx->run_vlc);
 
-        init_vlc(&ctx->ac_vlc, DNXHD_VLC_BITS, 257,
+        if ((ret = init_vlc(&ctx->ac_vlc, DNXHD_VLC_BITS, 257,
                  ctx->cid_table->ac_bits, 1, 1,
-                 ctx->cid_table->ac_codes, 2, 2, 0);
-        init_vlc(&ctx->dc_vlc, DNXHD_DC_VLC_BITS, bitdepth > 8 ? 14 : 12,
+                 ctx->cid_table->ac_codes, 2, 2, 0)) < 0)
+            goto out;
+        if ((ret = init_vlc(&ctx->dc_vlc, DNXHD_DC_VLC_BITS, bitdepth > 8 ? 14 : 12,
                  ctx->cid_table->dc_bits, 1, 1,
-                 ctx->cid_table->dc_codes, 1, 1, 0);
-        init_vlc(&ctx->run_vlc, DNXHD_VLC_BITS, 62,
+                 ctx->cid_table->dc_codes, 1, 1, 0)) < 0)
+            goto out;
+        if ((ret = init_vlc(&ctx->run_vlc, DNXHD_VLC_BITS, 62,
                  ctx->cid_table->run_bits, 1, 1,
-                 ctx->cid_table->run_codes, 2, 2, 0);
+                 ctx->cid_table->run_codes, 2, 2, 0)) < 0)
+            goto out;
 
         ctx->cid = cid;
     }
-    return 0;
+    ret = 0;
+out:
+    if (ret < 0)
+        av_log(ctx->avctx, AV_LOG_ERROR, "init_vlc failed\n");
+    return ret;
 }
 
 static av_cold int dnxhd_decode_init_thread_copy(AVCodecContext *avctx)
@@ -205,6 +215,10 @@ static int dnxhd_decode_header(DNXHDContext *ctx, AVFrame *frame,
         ctx->cur_field = 0;
     }
     ctx->mbaff = (buf[0x6] >> 5) & 1;
+    ctx->alpha = buf[0x7] & 1;
+    ctx->lla   = (buf[0x7] >> 1) & 1;
+    if (ctx->alpha)
+        avpriv_request_sample(ctx->avctx, "alpha");
 
     ctx->height = AV_RB16(buf + 0x18);
     ctx->width  = AV_RB16(buf + 0x1a);
@@ -583,12 +597,16 @@ static int dnxhd_decode_row(AVCodecContext *avctx, void *data,
     const DNXHDContext *ctx = avctx->priv_data;
     uint32_t offset = ctx->mb_scan_index[rownb];
     RowContext *row = ctx->rows + threadnb;
-    int x;
+    int x, ret;
 
     row->last_dc[0] =
     row->last_dc[1] =
     row->last_dc[2] = 1 << (ctx->bit_depth + 2); // for levels +2^(bitdepth-1)
-    init_get_bits(&row->gb, ctx->buf + offset, (ctx->buf_size - offset) << 3);
+    ret = init_get_bits8(&row->gb, ctx->buf + offset, ctx->buf_size - offset);
+    if (ret < 0) {
+        row->errors++;
+        return ret;
+    }
     for (x = 0; x < ctx->mb_width; x++) {
         //START_TIMER;
         int ret = dnxhd_decode_macroblock(ctx, row, data, x, rownb);

@@ -56,7 +56,7 @@ enum {
 #define CFA_BLGRAY  0x20000000U
 #define CFA_BRGRAY  0x10000000U
 
-static int cine_read_probe(AVProbeData *p)
+static int cine_read_probe(const AVProbeData *p)
 {
     int HeaderSize;
     if (p->buf[0] == 'C' && p->buf[1] == 'I' &&  // Type
@@ -284,7 +284,7 @@ static int cine_read_packet(AVFormatContext *avctx, AVPacket *pkt)
     AVIOContext *pb = avctx->pb;
     int n, size, ret;
 
-    if (cine->pts >= st->duration)
+    if (cine->pts >= st->nb_index_entries)
         return AVERROR_EOF;
 
     avio_seek(pb, st->index_entries[cine->pts].pos, SEEK_SET);

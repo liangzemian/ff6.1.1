@@ -36,13 +36,15 @@ static void pnm_get(PNMContext *sc, char *str, int buf_size)
 {
     char *s;
     int c;
+    uint8_t *bs  = sc->bytestream;
+    const uint8_t *end = sc->bytestream_end;
 
     /* skip spaces and comments */
-    while (sc->bytestream < sc->bytestream_end) {
-        c = *sc->bytestream++;
+    while (bs < end) {
+        c = *bs++;
         if (c == '#')  {
-            while (c != '\n' && sc->bytestream < sc->bytestream_end) {
-                c = *sc->bytestream++;
+            while (c != '\n' && bs < end) {
+                c = *bs++;
             }
         } else if (!pnm_space(c)) {
             break;
@@ -50,12 +52,14 @@ static void pnm_get(PNMContext *sc, char *str, int buf_size)
     }
 
     s = str;
-    while (sc->bytestream < sc->bytestream_end && !pnm_space(c)) {
-        if ((s - str)  < buf_size - 1)
-            *s++ = c;
-        c = *sc->bytestream++;
+    while (bs < end && !pnm_space(c) && (s - str) < buf_size - 1) {
+        *s++ = c;
+        c = *bs++;
     }
     *s = '\0';
+    while (bs < end && !pnm_space(c))
+        c = *bs++;
+    sc->bytestream = bs;
 }
 
 int ff_pnm_decode_header(AVCodecContext *avctx, PNMContext * const s)
@@ -108,6 +112,9 @@ int ff_pnm_decode_header(AVCodecContext *avctx, PNMContext * const s)
                 return AVERROR_INVALIDDATA;
             }
         }
+        if (!pnm_space(s->bytestream[-1]))
+            return AVERROR_INVALIDDATA;
+
         /* check that all tags are present */
         if (w <= 0 || h <= 0 || maxval <= 0 || maxval > UINT16_MAX || depth <= 0 || tuple_type[0] == '\0' ||
             av_image_check_size(w, h, 0, avctx) || s->bytestream >= s->bytestream_end)
@@ -188,6 +195,10 @@ int ff_pnm_decode_header(AVCodecContext *avctx, PNMContext * const s)
         }
     }else
         s->maxval=1;
+
+    if (!pnm_space(s->bytestream[-1]))
+        return AVERROR_INVALIDDATA;
+
     /* more check if YUV420 */
     if (av_pix_fmt_desc_get(avctx->pix_fmt)->flags & AV_PIX_FMT_FLAG_PLANAR) {
         if ((avctx->width & 1) != 0)

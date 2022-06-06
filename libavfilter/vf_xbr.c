@@ -24,7 +24,7 @@
  * XBR Filter is used for depixelization of image.
  * This is based on Hyllian's xBR shader.
  *
- * @see http://www.libretro.com/forums/viewtopic.php?f=6&t=134
+ * @see https://forums.libretro.com/t/xbr-algorithm-tutorial/123
  * @see https://github.com/yoyofr/iFBA/blob/master/fba_src/src/intf/video/scalers/xbr.cpp
  */
 
@@ -395,7 +395,7 @@ static int init(AVFilterContext *ctx)
             int startg = FFMAX3(-bg, -rg, 0);
             int endg = FFMIN3(255-bg, 255-rg, 255);
             uint32_t y = (uint32_t)(( 299*rg + 1000*startg + 114*bg)/1000);
-            c = bg + (rg<<16) + 0x010101 * startg;
+            c = bg + rg * (1 << 16) + 0x010101 * startg;
             for (g = startg; g <= endg; g++) {
                 s->rgbtoyuv[c] = ((y++) << 16) + (u << 8) + v;
                 c+= 0x010101;

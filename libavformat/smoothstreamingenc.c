@@ -293,7 +293,7 @@ static int ism_write_header(AVFormatContext *s)
 {
     SmoothStreamingContext *c = s->priv_data;
     int ret = 0, i;
-    AVOutputFormat *oformat;
+    ff_const59 AVOutputFormat *oformat;
 
     if (mkdir(s->url, 0777) == -1 && errno != EEXIST) {
         ret = AVERROR(errno);
@@ -320,23 +320,24 @@ static int ism_write_header(AVFormatContext *s)
         AVDictionary *opts = NULL;
 
         if (!s->streams[i]->codecpar->bit_rate) {
-            av_log(s, AV_LOG_ERROR, "No bit rate set for stream %d\n", i);
-            ret = AVERROR(EINVAL);
-            goto fail;
+            av_log(s, AV_LOG_WARNING, "No bit rate set for stream %d\n", i);
+            // create a tmp name for the directory of fragments
+            snprintf(os->dirname, sizeof(os->dirname), "%s/QualityLevels(Tmp_%d)", s->url, i);
+        } else {
+            snprintf(os->dirname, sizeof(os->dirname), "%s/QualityLevels(%"PRId64")", s->url, s->streams[i]->codecpar->bit_rate);
         }
-        snprintf(os->dirname, sizeof(os->dirname), "%s/QualityLevels(%"PRId64")", s->url, s->streams[i]->codecpar->bit_rate);
+
         if (mkdir(os->dirname, 0777) == -1 && errno != EEXIST) {
             ret = AVERROR(errno);
             av_log(s, AV_LOG_ERROR, "mkdir failed\n");
             goto fail;
         }
 
-        ctx = avformat_alloc_context();
+        os->ctx = ctx = avformat_alloc_context();
         if (!ctx || ff_copy_whiteblacklists(ctx, s) < 0) {
             ret = AVERROR(ENOMEM);
             goto fail;
         }
-        os->ctx = ctx;
         ctx->oformat = oformat;
         ctx->interrupt_callback = s->interrupt_callback;
 
@@ -356,12 +357,13 @@ static int ism_write_header(AVFormatContext *s)
 
         av_dict_set_int(&opts, "ism_lookahead", c->lookahead_count, 0);
         av_dict_set(&opts, "movflags", "frag_custom", 0);
-        if ((ret = avformat_write_header(ctx, &opts)) < 0) {
+        ret = avformat_write_header(ctx, &opts);
+        av_dict_free(&opts);
+        if (ret < 0) {
              goto fail;
         }
         os->ctx_inited = 1;
         avio_flush(ctx->pb);
-        av_dict_free(&opts);
         s->streams[i]->time_base = st->time_base;
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             c->has_video = 1;
@@ -519,7 +521,7 @@ static int ism_flush(AVFormatContext *s, int final)
 
     for (i = 0; i < s->nb_streams; i++) {
         OutputStream *os = &c->streams[i];
-        char filename[1024], target_filename[1024], header_filename[1024];
+        char filename[1024], target_filename[1024], header_filename[1024], curr_dirname[1024];
         int64_t size;
         int64_t start_ts, duration, moof_size;
         if (!os->packets_written)
@@ -541,6 +543,26 @@ static int ism_flush(AVFormatContext *s, int final)
         size = os->tail_pos - os->cur_start_pos;
         if ((ret = parse_fragment(s, filename, &start_ts, &duration, &moof_size, size)) < 0)
             break;
+
+        if (!s->streams[i]->codecpar->bit_rate) {
+            int64_t bitrate = (int64_t) size * 8 * AV_TIME_BASE / av_rescale_q(duration, s->streams[i]->time_base, AV_TIME_BASE_Q);
+            if (!bitrate) {
+                av_log(s, AV_LOG_ERROR, "calculating bitrate got zero.\n");
+                ret = AVERROR(EINVAL);
+                return ret;
+            }
+
+            av_log(s, AV_LOG_DEBUG, "calculated bitrate: %"PRId64"\n", bitrate);
+            s->streams[i]->codecpar->bit_rate = bitrate;
+            memcpy(curr_dirname, os->dirname, sizeof(os->dirname));
+            snprintf(os->dirname, sizeof(os->dirname), "%s/QualityLevels(%"PRId64")", s->url, s->streams[i]->codecpar->bit_rate);
+            snprintf(filename, sizeof(filename), "%s/temp", os->dirname);
+
+            // rename the tmp folder back to the correct name since we now have the bitrate
+            if ((ret = ff_rename((const char*)curr_dirname,  os->dirname, s)) < 0)
+                return ret;
+        }
+
         snprintf(header_filename, sizeof(header_filename), "%s/FragmentInfo(%s=%"PRIu64")", os->dirname, os->stream_type_tag, start_ts);
         snprintf(target_filename, sizeof(target_filename), "%s/Fragments(%s=%"PRIu64")", os->dirname, os->stream_type_tag, start_ts);
         copy_moof(s, filename, header_filename, moof_size);
