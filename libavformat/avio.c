@@ -316,8 +316,9 @@ int ffurl_open_whitelist(URLContext **puc, const char *filename, int flags,
         return ret;
     if (parent) {
         ret = av_opt_copy(*puc, parent);
-        if (ret < 0)
-            goto fail;
+	  //TODO 暂时注释错误判断,解决无法处理链接带参数问题
+//        if (ret < 0)
+//            goto fail;
     }
     if (options &&
         (ret = av_opt_set_dict(*puc, options)) < 0)
