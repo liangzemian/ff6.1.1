@@ -138,11 +138,13 @@ static int wc3_read_header(AVFormatContext *s)
         case BNAM_TAG:
             /* load up the name */
             buffer = av_malloc(size+1);
+            if (!buffer)
             if (!buffer) {
                 ret = AVERROR(ENOMEM);
                 goto fail;
             }
             if ((ret = avio_read(pb, buffer, size)) != size) {
+                av_freep(&buffer);
                 ret =  AVERROR(EIO);
                 goto fail;
             }
