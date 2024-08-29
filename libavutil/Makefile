@@ -1,9 +1,7 @@
 NAME = avutil
 DESC = FFmpeg utility library
 
-HEADERS = thread.h                                                      \
-          application.h                                                 \
-          adler32.h                                                     \
+HEADERS = adler32.h                                                     \
           aes.h                                                         \
           aes_ctr.h                                                     \
           ambient_viewing_environment.h                                 \
@@ -104,9 +102,7 @@ ARCH_HEADERS = bswap.h                                                  \
 BUILT_HEADERS = avconfig.h                                              \
                 ffversion.h
 
-OBJS = application.o                                                    \
-       color_utils.o                                                    \
-       adler32.o                                                        \
+OBJS = adler32.o                                                        \
        aes.o                                                            \
        aes_ctr.o                                                        \
        ambient_viewing_environment.o                                    \

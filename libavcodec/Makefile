@@ -1,8 +1,7 @@
 NAME = avcodec
 DESC = FFmpeg codec library
 
-HEADERS = packet_internal.h                                             \
-          ac3_parser.h                                                  \
+HEADERS = ac3_parser.h                                                  \
           adts_parser.h                                                 \
           avcodec.h                                                     \
           avdct.h                                                       \
