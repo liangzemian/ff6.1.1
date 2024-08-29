@@ -93,6 +93,7 @@ HEADERS = adler32.h                                                     \
           tx.h                                                          \
           film_grain_params.h                                           \
           application.h                                                 \
+          thread.h                                                      \
           video_hint.h
 
 ARCH_HEADERS = bswap.h                                                  \
