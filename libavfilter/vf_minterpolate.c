@@ -21,10 +21,13 @@
 
 #include "motion_estimation.h"
 #include "libavcodec/mathops.h"
+#include "libavutil/avassert.h"
 #include "libavutil/common.h"
+#include "libavutil/motion_vector.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "avfilter.h"
+#include "formats.h"
 #include "internal.h"
 #include "video.h"
 #include "scene_sad.h"
@@ -233,17 +236,25 @@ static const AVOption minterpolate_options[] = {
 
 AVFILTER_DEFINE_CLASS(minterpolate);
 
-static const enum AVPixelFormat pix_fmts[] = {
-    AV_PIX_FMT_YUV410P, AV_PIX_FMT_YUV411P,
-    AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV422P,
-    AV_PIX_FMT_YUV440P, AV_PIX_FMT_YUV444P,
-    AV_PIX_FMT_YUVJ444P, AV_PIX_FMT_YUVJ440P,
-    AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ420P,
-    AV_PIX_FMT_YUVJ411P,
-    AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUVA422P, AV_PIX_FMT_YUVA444P,
-    AV_PIX_FMT_GRAY8,
-    AV_PIX_FMT_NONE
-};
+static int query_formats(AVFilterContext *ctx)
+{
+    static const enum AVPixelFormat pix_fmts[] = {
+        AV_PIX_FMT_YUV410P, AV_PIX_FMT_YUV411P,
+        AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV422P,
+        AV_PIX_FMT_YUV440P, AV_PIX_FMT_YUV444P,
+        AV_PIX_FMT_YUVJ444P, AV_PIX_FMT_YUVJ440P,
+        AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ420P,
+        AV_PIX_FMT_YUVJ411P,
+        AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUVA422P, AV_PIX_FMT_YUVA444P,
+        AV_PIX_FMT_GRAY8,
+        AV_PIX_FMT_NONE
+    };
+
+    AVFilterFormats *fmts_list = ff_make_format_list(pix_fmts);
+    if (!fmts_list)
+        return AVERROR(ENOMEM);
+    return ff_set_common_formats(ctx, fmts_list);
+}
 
 static uint64_t get_sbad(AVMotionEstContext *me_ctx, int x, int y, int x_mv, int y_mv)
 {
@@ -346,7 +357,7 @@ static int config_input(AVFilterLink *inlink)
 
     for (i = 0; i < NB_FRAMES; i++) {
         Frame *frame = &mi_ctx->frames[i];
-        frame->blocks = av_calloc(mi_ctx->b_count, sizeof(*frame->blocks));
+        frame->blocks = av_mallocz_array(mi_ctx->b_count, sizeof(Block));
         if (!frame->blocks)
             return AVERROR(ENOMEM);
     }
@@ -366,19 +377,19 @@ static int config_input(AVFilterLink *inlink)
         else if (mi_ctx->me_mode == ME_MODE_BILAT)
             me_ctx->get_cost = &get_sbad_ob;
 
-        mi_ctx->pixel_mvs     = av_calloc(width * height, sizeof(*mi_ctx->pixel_mvs));
-        mi_ctx->pixel_weights = av_calloc(width * height, sizeof(*mi_ctx->pixel_weights));
-        mi_ctx->pixel_refs    = av_calloc(width * height, sizeof(*mi_ctx->pixel_refs));
+        mi_ctx->pixel_mvs = av_mallocz_array(width * height, sizeof(PixelMVS));
+        mi_ctx->pixel_weights = av_mallocz_array(width * height, sizeof(PixelWeights));
+        mi_ctx->pixel_refs = av_mallocz_array(width * height, sizeof(PixelRefs));
         if (!mi_ctx->pixel_mvs || !mi_ctx->pixel_weights || !mi_ctx->pixel_refs)
             return AVERROR(ENOMEM);
 
         if (mi_ctx->me_mode == ME_MODE_BILAT)
-            if (!FF_ALLOCZ_TYPED_ARRAY(mi_ctx->int_blocks, mi_ctx->b_count))
+            if (!(mi_ctx->int_blocks = av_mallocz_array(mi_ctx->b_count, sizeof(Block))))
                 return AVERROR(ENOMEM);
 
         if (mi_ctx->me_method == AV_ME_METHOD_EPZS) {
             for (i = 0; i < 3; i++) {
-                mi_ctx->mv_table[i] = av_calloc(mi_ctx->b_count, sizeof(*mi_ctx->mv_table[0]));
+                mi_ctx->mv_table[i] = av_mallocz_array(mi_ctx->b_count, sizeof(*mi_ctx->mv_table[0]));
                 if (!mi_ctx->mv_table[i])
                     return AVERROR(ENOMEM);
             }
@@ -594,7 +605,7 @@ static int var_size_bme(MIContext *mi_ctx, Block *block, int x_mb, int y_mb, int
     }
 
     if (!block->subs) {
-        block->subs = av_mallocz(4 * sizeof(*block->subs));
+        block->subs = av_mallocz_array(4, sizeof(Block));
         if (!block->subs)
             return AVERROR(ENOMEM);
     }
@@ -825,6 +836,7 @@ static int detect_scene_change(AVFilterContext *ctx)
         double ret = 0, mafd, diff;
         uint64_t sad;
         mi_ctx->sad(p1, linesize1, p2, linesize2, input->w, input->h, &sad);
+        emms_c();
         mafd = (double) sad * 100.0 / (input->h * input->w) / (1 << mi_ctx->bitdepth);
         diff = fabs(mafd - mi_ctx->prev_mafd);
         ret  = av_clipf(FFMIN(mafd, diff), 0, 100.0);
@@ -1075,13 +1087,8 @@ static void interpolate(AVFilterLink *inlink, AVFrame *avf_out)
     pts = av_rescale(avf_out->pts, (int64_t) ALPHA_MAX * outlink->time_base.num * inlink->time_base.den,
                                    (int64_t)             outlink->time_base.den * inlink->time_base.num);
 
-    if (mi_ctx->frames[2].avf->pts > mi_ctx->frames[1].avf->pts) {
-        alpha = (pts - mi_ctx->frames[1].avf->pts * ALPHA_MAX) / (mi_ctx->frames[2].avf->pts - mi_ctx->frames[1].avf->pts);
-        alpha = av_clip(alpha, 0, ALPHA_MAX);
-    } else {
-        av_log(ctx, AV_LOG_DEBUG, "duplicate input PTS detected\n");
-        alpha = 0;
-    }
+    alpha = (pts - mi_ctx->frames[1].avf->pts * ALPHA_MAX) / (mi_ctx->frames[2].avf->pts - mi_ctx->frames[1].avf->pts);
+    alpha = av_clip(alpha, 0, ALPHA_MAX);
 
     if (alpha == 0 || alpha == ALPHA_MAX) {
         av_frame_copy(avf_out, alpha ? mi_ctx->frames[2].avf : mi_ctx->frames[1].avf);
@@ -1191,7 +1198,6 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *avf_in)
 
         av_frame_copy_props(avf_out, mi_ctx->frames[NB_FRAMES - 1].avf);
         avf_out->pts = mi_ctx->out_pts++;
-        avf_out->duration = 1;
 
         interpolate(inlink, avf_out);
 
@@ -1240,6 +1246,7 @@ static const AVFilterPad minterpolate_inputs[] = {
         .filter_frame  = filter_frame,
         .config_props  = config_input,
     },
+    { NULL }
 };
 
 static const AVFilterPad minterpolate_outputs[] = {
@@ -1248,15 +1255,16 @@ static const AVFilterPad minterpolate_outputs[] = {
         .type          = AVMEDIA_TYPE_VIDEO,
         .config_props  = config_output,
     },
+    { NULL }
 };
 
-const AVFilter ff_vf_minterpolate = {
+AVFilter ff_vf_minterpolate = {
     .name          = "minterpolate",
     .description   = NULL_IF_CONFIG_SMALL("Frame rate conversion using Motion Interpolation."),
     .priv_size     = sizeof(MIContext),
     .priv_class    = &minterpolate_class,
     .uninit        = uninit,
-    FILTER_INPUTS(minterpolate_inputs),
-    FILTER_OUTPUTS(minterpolate_outputs),
-    FILTER_PIXFMTS_ARRAY(pix_fmts),
+    .query_formats = query_formats,
+    .inputs        = minterpolate_inputs,
+    .outputs       = minterpolate_outputs,
 };

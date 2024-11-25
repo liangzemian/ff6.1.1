@@ -23,8 +23,6 @@
  * fade audio filter
  */
 
-#include "config_components.h"
-
 #include "libavutil/opt.h"
 #include "audio.h"
 #include "avfilter.h"
@@ -39,31 +37,30 @@ typedef struct AudioFadeContext {
     int64_t start_sample;
     int64_t duration;
     int64_t start_time;
-    double silence;
-    double unity;
     int overlap;
-    int status[2];
-    int passthrough;
+    int cf0_eof;
+    int crossfade_is_over;
     int64_t pts;
 
     void (*fade_samples)(uint8_t **dst, uint8_t * const *src,
                          int nb_samples, int channels, int direction,
-                         int64_t start, int64_t range, int curve,
-                         double silence, double unity);
-    void (*scale_samples)(uint8_t **dst, uint8_t * const *src,
-                          int nb_samples, int channels, double unity);
+                         int64_t start, int64_t range, int curve);
     void (*crossfade_samples)(uint8_t **dst, uint8_t * const *cf0,
                               uint8_t * const *cf1,
                               int nb_samples, int channels,
                               int curve0, int curve1);
 } AudioFadeContext;
 
-enum CurveType { NONE = -1, TRI, QSIN, ESIN, HSIN, LOG, IPAR, QUA, CUB, SQU, CBR, PAR, EXP, IQSIN, IHSIN, DESE, DESI, LOSI, SINC, ISINC, QUAT, QUATR, QSIN2, HSIN2, NB_CURVES };
+enum CurveType { NONE = -1, TRI, QSIN, ESIN, HSIN, LOG, IPAR, QUA, CUB, SQU, CBR, PAR, EXP, IQSIN, IHSIN, DESE, DESI, LOSI, SINC, ISINC, NB_CURVES };
 
 #define OFFSET(x) offsetof(AudioFadeContext, x)
 #define FLAGS AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 #define TFLAGS AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
 
+static int query_formats(AVFilterContext *ctx)
+{
+    AVFilterFormats *formats;
+    AVFilterChannelLayouts *layouts;
     static const enum AVSampleFormat sample_fmts[] = {
         AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_S16P,
         AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_S32P,
@@ -71,8 +68,29 @@ enum CurveType { NONE = -1, TRI, QSIN, ESIN, HSIN, LOG, IPAR, QUA, CUB, SQU, CBR
         AV_SAMPLE_FMT_DBL, AV_SAMPLE_FMT_DBLP,
         AV_SAMPLE_FMT_NONE
     };
+    int ret;
 
-static double fade_gain(int curve, int64_t index, int64_t range, double silence, double unity)
+    layouts = ff_all_channel_counts();
+    if (!layouts)
+        return AVERROR(ENOMEM);
+    ret = ff_set_common_channel_layouts(ctx, layouts);
+    if (ret < 0)
+        return ret;
+
+    formats = ff_make_format_list(sample_fmts);
+    if (!formats)
+        return AVERROR(ENOMEM);
+    ret = ff_set_common_formats(ctx, formats);
+    if (ret < 0)
+        return ret;
+
+    formats = ff_all_samplerates();
+    if (!formats)
+        return AVERROR(ENOMEM);
+    return ff_set_common_samplerates(ctx, formats);
+}
+
+static double fade_gain(int curve, int64_t index, int64_t range)
 {
 #define CUBE(a) ((a)*(a)*(a))
     double gain;
@@ -142,36 +160,23 @@ static double fade_gain(int curve, int64_t index, int64_t range, double silence,
     case ISINC:
         gain = gain <= 0.0 ? 0.0 : 1.0 - sin(M_PI * gain) / (M_PI * gain);
         break;
-    case QUAT:
-        gain = gain * gain * gain * gain;
-        break;
-    case QUATR:
-        gain = pow(gain, 0.25);
-        break;
-    case QSIN2:
-        gain = sin(gain * M_PI / 2.0) * sin(gain * M_PI / 2.0);
-        break;
-    case HSIN2:
-        gain = pow((1.0 - cos(gain * M_PI)) / 2.0, 2.0);
-        break;
     case NONE:
         gain = 1.0;
         break;
     }
 
-    return silence + (unity - silence) * gain;
+    return gain;
 }
 
 #define FADE_PLANAR(name, type)                                             \
 static void fade_samples_## name ##p(uint8_t **dst, uint8_t * const *src,   \
                                      int nb_samples, int channels, int dir, \
-                                     int64_t start, int64_t range,int curve,\
-                                     double silence, double unity)          \
+                                     int64_t start, int64_t range, int curve) \
 {                                                                           \
     int i, c;                                                               \
                                                                             \
     for (i = 0; i < nb_samples; i++) {                                      \
-        double gain = fade_gain(curve, start + i * dir,range,silence,unity);\
+        double gain = fade_gain(curve, start + i * dir, range);             \
         for (c = 0; c < channels; c++) {                                    \
             type *d = (type *)dst[c];                                       \
             const type *s = (type *)src[c];                                 \
@@ -184,15 +189,14 @@ static void fade_samples_## name ##p(uint8_t **dst, uint8_t * const *src,   \
 #define FADE(name, type)                                                    \
 static void fade_samples_## name (uint8_t **dst, uint8_t * const *src,      \
                                   int nb_samples, int channels, int dir,    \
-                                  int64_t start, int64_t range, int curve,  \
-                                  double silence, double unity)             \
+                                  int64_t start, int64_t range, int curve)  \
 {                                                                           \
     type *d = (type *)dst[0];                                               \
     const type *s = (type *)src[0];                                         \
     int i, c, k = 0;                                                        \
                                                                             \
     for (i = 0; i < nb_samples; i++) {                                      \
-        double gain = fade_gain(curve, start + i * dir,range,silence,unity);\
+        double gain = fade_gain(curve, start + i * dir, range);             \
         for (c = 0; c < channels; c++, k++)                                 \
             d[k] = s[k] * gain;                                             \
     }                                                                       \
@@ -208,77 +212,20 @@ FADE(flt, float)
 FADE(s16, int16_t)
 FADE(s32, int32_t)
 
-#define SCALE_PLANAR(name, type)                                            \
-static void scale_samples_## name ##p(uint8_t **dst, uint8_t * const *src,  \
-                                     int nb_samples, int channels,          \
-                                     double gain)                           \
-{                                                                           \
-    int i, c;                                                               \
-                                                                            \
-    for (i = 0; i < nb_samples; i++) {                                      \
-        for (c = 0; c < channels; c++) {                                    \
-            type *d = (type *)dst[c];                                       \
-            const type *s = (type *)src[c];                                 \
-                                                                            \
-            d[i] = s[i] * gain;                                             \
-        }                                                                   \
-    }                                                                       \
-}
-
-#define SCALE(name, type)                                                   \
-static void scale_samples_## name (uint8_t **dst, uint8_t * const *src,     \
-                                  int nb_samples, int channels, double gain)\
-{                                                                           \
-    type *d = (type *)dst[0];                                               \
-    const type *s = (type *)src[0];                                         \
-    int i, c, k = 0;                                                        \
-                                                                            \
-    for (i = 0; i < nb_samples; i++) {                                      \
-        for (c = 0; c < channels; c++, k++)                                 \
-            d[k] = s[k] * gain;                                             \
-    }                                                                       \
-}
-
-SCALE_PLANAR(dbl, double)
-SCALE_PLANAR(flt, float)
-SCALE_PLANAR(s16, int16_t)
-SCALE_PLANAR(s32, int32_t)
-
-SCALE(dbl, double)
-SCALE(flt, float)
-SCALE(s16, int16_t)
-SCALE(s32, int32_t)
-
 static int config_output(AVFilterLink *outlink)
 {
     AVFilterContext *ctx = outlink->src;
     AudioFadeContext *s  = ctx->priv;
 
     switch (outlink->format) {
-    case AV_SAMPLE_FMT_DBL:  s->fade_samples = fade_samples_dbl;
-                             s->scale_samples = scale_samples_dbl;
-                             break;
-    case AV_SAMPLE_FMT_DBLP: s->fade_samples = fade_samples_dblp;
-                             s->scale_samples = scale_samples_dblp;
-                             break;
-    case AV_SAMPLE_FMT_FLT:  s->fade_samples = fade_samples_flt;
-                             s->scale_samples = scale_samples_flt;
-                             break;
-    case AV_SAMPLE_FMT_FLTP: s->fade_samples = fade_samples_fltp;
-                             s->scale_samples = scale_samples_fltp;
-                             break;
-    case AV_SAMPLE_FMT_S16:  s->fade_samples = fade_samples_s16;
-                             s->scale_samples = scale_samples_s16;
-                             break;
-    case AV_SAMPLE_FMT_S16P: s->fade_samples = fade_samples_s16p;
-                             s->scale_samples = scale_samples_s16p;
-                             break;
-    case AV_SAMPLE_FMT_S32:  s->fade_samples = fade_samples_s32;
-                             s->scale_samples = scale_samples_s32;
-                             break;
-    case AV_SAMPLE_FMT_S32P: s->fade_samples = fade_samples_s32p;
-                             s->scale_samples = scale_samples_s32p;
-                             break;
+    case AV_SAMPLE_FMT_DBL:  s->fade_samples = fade_samples_dbl;  break;
+    case AV_SAMPLE_FMT_DBLP: s->fade_samples = fade_samples_dblp; break;
+    case AV_SAMPLE_FMT_FLT:  s->fade_samples = fade_samples_flt;  break;
+    case AV_SAMPLE_FMT_FLTP: s->fade_samples = fade_samples_fltp; break;
+    case AV_SAMPLE_FMT_S16:  s->fade_samples = fade_samples_s16;  break;
+    case AV_SAMPLE_FMT_S16P: s->fade_samples = fade_samples_s16p; break;
+    case AV_SAMPLE_FMT_S32:  s->fade_samples = fade_samples_s32;  break;
+    case AV_SAMPLE_FMT_S32P: s->fade_samples = fade_samples_s32p; break;
     }
 
     if (s->duration)
@@ -328,12 +275,6 @@ static const AVOption afade_options[] = {
     { "losi",         "logistic sigmoid",                            0,                    AV_OPT_TYPE_CONST,  {.i64 = LOSI }, 0, 0, TFLAGS, "curve" },
     { "sinc",         "sine cardinal function",                      0,                    AV_OPT_TYPE_CONST,  {.i64 = SINC }, 0, 0, TFLAGS, "curve" },
     { "isinc",        "inverted sine cardinal function",             0,                    AV_OPT_TYPE_CONST,  {.i64 = ISINC}, 0, 0, TFLAGS, "curve" },
-    { "quat",         "quartic",                                     0,                    AV_OPT_TYPE_CONST,  {.i64 = QUAT }, 0, 0, TFLAGS, "curve" },
-    { "quatr",        "quartic root",                                0,                    AV_OPT_TYPE_CONST,  {.i64 = QUATR}, 0, 0, TFLAGS, "curve" },
-    { "qsin2",        "squared quarter of sine wave",                0,                    AV_OPT_TYPE_CONST,  {.i64 = QSIN2}, 0, 0, TFLAGS, "curve" },
-    { "hsin2",        "squared half of sine wave",                   0,                    AV_OPT_TYPE_CONST,  {.i64 = HSIN2}, 0, 0, TFLAGS, "curve" },
-    { "silence",      "set the silence gain",                        OFFSET(silence),      AV_OPT_TYPE_DOUBLE, {.dbl = 0 },    0, 1, TFLAGS },
-    { "unity",        "set the unity gain",                          OFFSET(unity),        AV_OPT_TYPE_DOUBLE, {.dbl = 1 },    0, 1, TFLAGS },
     { NULL }
 };
 
@@ -357,9 +298,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
     AVFrame *out_buf;
     int64_t cur_sample = av_rescale_q(buf->pts, inlink->time_base, (AVRational){1, inlink->sample_rate});
 
-    if (s->unity == 1.0 &&
-        ((!s->type && (s->start_sample + s->nb_samples < cur_sample)) ||
-         ( s->type && (cur_sample + nb_samples < s->start_sample))))
+    if ((!s->type && (s->start_sample + s->nb_samples < cur_sample)) ||
+        ( s->type && (cur_sample + nb_samples < s->start_sample)))
         return ff_filter_frame(outlink, buf);
 
     if (av_frame_is_writable(buf)) {
@@ -373,19 +313,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
 
     if ((!s->type && (cur_sample + nb_samples < s->start_sample)) ||
         ( s->type && (s->start_sample + s->nb_samples < cur_sample))) {
-        if (s->silence == 0.) {
-            av_samples_set_silence(out_buf->extended_data, 0, nb_samples,
-                                   out_buf->ch_layout.nb_channels, out_buf->format);
-        } else {
-            s->scale_samples(out_buf->extended_data, buf->extended_data,
-                             nb_samples, buf->ch_layout.nb_channels,
-                             s->silence);
-        }
-    } else if (( s->type && (cur_sample + nb_samples < s->start_sample)) ||
-               (!s->type && (s->start_sample + s->nb_samples < cur_sample))) {
-        s->scale_samples(out_buf->extended_data, buf->extended_data,
-                         nb_samples, buf->ch_layout.nb_channels,
-                         s->unity);
+        av_samples_set_silence(out_buf->extended_data, 0, nb_samples,
+                               out_buf->channels, out_buf->format);
     } else {
         int64_t start;
 
@@ -395,9 +324,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
             start = s->start_sample + s->nb_samples - cur_sample;
 
         s->fade_samples(out_buf->extended_data, buf->extended_data,
-                        nb_samples, buf->ch_layout.nb_channels,
+                        nb_samples, buf->channels,
                         s->type ? -1 : 1, start,
-                        s->nb_samples, s->curve, s->silence, s->unity);
+                        s->nb_samples, s->curve);
     }
 
     if (buf != out_buf)
@@ -424,6 +353,7 @@ static const AVFilterPad avfilter_af_afade_inputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .filter_frame = filter_frame,
     },
+    { NULL }
 };
 
 static const AVFilterPad avfilter_af_afade_outputs[] = {
@@ -432,16 +362,17 @@ static const AVFilterPad avfilter_af_afade_outputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .config_props = config_output,
     },
+    { NULL }
 };
 
-const AVFilter ff_af_afade = {
+AVFilter ff_af_afade = {
     .name          = "afade",
     .description   = NULL_IF_CONFIG_SMALL("Fade in/out input audio."),
+    .query_formats = query_formats,
     .priv_size     = sizeof(AudioFadeContext),
     .init          = init,
-    FILTER_INPUTS(avfilter_af_afade_inputs),
-    FILTER_OUTPUTS(avfilter_af_afade_outputs),
-    FILTER_SAMPLEFMTS_ARRAY(sample_fmts),
+    .inputs        = avfilter_af_afade_inputs,
+    .outputs       = avfilter_af_afade_outputs,
     .priv_class    = &afade_class,
     .process_command = process_command,
     .flags         = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC,
@@ -480,10 +411,6 @@ static const AVOption acrossfade_options[] = {
     {     "losi",     "logistic sigmoid",                              0,                    AV_OPT_TYPE_CONST,  {.i64 = LOSI }, 0, 0, FLAGS, "curve" },
     {     "sinc",     "sine cardinal function",                        0,                    AV_OPT_TYPE_CONST,  {.i64 = SINC }, 0, 0, FLAGS, "curve" },
     {     "isinc",    "inverted sine cardinal function",               0,                    AV_OPT_TYPE_CONST,  {.i64 = ISINC}, 0, 0, FLAGS, "curve" },
-    {     "quat",     "quartic",                                       0,                    AV_OPT_TYPE_CONST,  {.i64 = QUAT }, 0, 0, FLAGS, "curve" },
-    {     "quatr",    "quartic root",                                  0,                    AV_OPT_TYPE_CONST,  {.i64 = QUATR}, 0, 0, FLAGS, "curve" },
-    {     "qsin2",    "squared quarter of sine wave",                  0,                    AV_OPT_TYPE_CONST,  {.i64 = QSIN2}, 0, 0, FLAGS, "curve" },
-    {     "hsin2",    "squared half of sine wave",                     0,                    AV_OPT_TYPE_CONST,  {.i64 = HSIN2}, 0, 0, FLAGS, "curve" },
     { "curve2",       "set fade curve type for 2nd stream",            OFFSET(curve2),       AV_OPT_TYPE_INT,    {.i64 = TRI  }, NONE, NB_CURVES - 1, FLAGS, "curve" },
     { "c2",           "set fade curve type for 2nd stream",            OFFSET(curve2),       AV_OPT_TYPE_INT,    {.i64 = TRI  }, NONE, NB_CURVES - 1, FLAGS, "curve" },
     { NULL }
@@ -500,8 +427,8 @@ static void crossfade_samples_## name ##p(uint8_t **dst, uint8_t * const *cf0, \
     int i, c;                                                                  \
                                                                                \
     for (i = 0; i < nb_samples; i++) {                                         \
-        double gain0 = fade_gain(curve0, nb_samples - 1 - i, nb_samples,0.,1.);\
-        double gain1 = fade_gain(curve1, i, nb_samples, 0., 1.);               \
+        double gain0 = fade_gain(curve0, nb_samples - 1 - i, nb_samples);      \
+        double gain1 = fade_gain(curve1, i, nb_samples);                       \
         for (c = 0; c < channels; c++) {                                       \
             type *d = (type *)dst[c];                                          \
             const type *s0 = (type *)cf0[c];                                   \
@@ -524,8 +451,8 @@ static void crossfade_samples_## name (uint8_t **dst, uint8_t * const *cf0, \
     int i, c, k = 0;                                                        \
                                                                             \
     for (i = 0; i < nb_samples; i++) {                                      \
-        double gain0 = fade_gain(curve0, nb_samples - 1-i,nb_samples,0.,1.);\
-        double gain1 = fade_gain(curve1, i, nb_samples, 0., 1.);            \
+        double gain0 = fade_gain(curve0, nb_samples - 1 - i, nb_samples);   \
+        double gain1 = fade_gain(curve1, i, nb_samples);                    \
         for (c = 0; c < channels; c++, k++)                                 \
             d[k] = s0[k] * gain0 + s1[k] * gain1;                           \
     }                                                                       \
@@ -541,13 +468,6 @@ CROSSFADE(flt, float)
 CROSSFADE(s16, int16_t)
 CROSSFADE(s32, int32_t)
 
-static int check_input(AVFilterLink *inlink)
-{
-    const int queued_samples = ff_inlink_queued_samples(inlink);
-
-    return ff_inlink_check_available_samples(inlink, queued_samples + 1) == 1;
-}
-
 static int activate(AVFilterContext *ctx)
 {
     AudioFadeContext *s   = ctx->priv;
@@ -558,7 +478,7 @@ static int activate(AVFilterContext *ctx)
 
     FF_FILTER_FORWARD_STATUS_BACK_ALL(outlink, ctx);
 
-    if (s->passthrough && s->status[0]) {
+    if (s->crossfade_is_over) {
         ret = ff_inlink_consume_frame(ctx->inputs[1], &in);
         if (ret > 0) {
             in->pts = s->pts;
@@ -568,29 +488,30 @@ static int activate(AVFilterContext *ctx)
         } else if (ret < 0) {
             return ret;
         } else if (ff_inlink_acknowledge_status(ctx->inputs[1], &status, &pts)) {
-            ff_outlink_set_status(outlink, status, pts);
+            ff_outlink_set_status(ctx->outputs[0], status, pts);
             return 0;
         } else if (!ret) {
-            if (ff_outlink_frame_wanted(outlink)) {
+            if (ff_outlink_frame_wanted(ctx->outputs[0])) {
                 ff_inlink_request_frame(ctx->inputs[1]);
                 return 0;
             }
         }
     }
 
-    nb_samples = ff_inlink_queued_samples(ctx->inputs[0]);
-    if (nb_samples  > s->nb_samples) {
-        nb_samples -= s->nb_samples;
-        s->passthrough = 1;
-        ret = ff_inlink_consume_samples(ctx->inputs[0], nb_samples, nb_samples, &in);
-        if (ret < 0)
-            return ret;
+    if (ff_inlink_queued_samples(ctx->inputs[0]) > s->nb_samples) {
+        nb_samples = ff_inlink_queued_samples(ctx->inputs[0]) - s->nb_samples;
+        if (nb_samples > 0) {
+            ret = ff_inlink_consume_samples(ctx->inputs[0], nb_samples, nb_samples, &in);
+            if (ret < 0) {
+                return ret;
+            }
+        }
         in->pts = s->pts;
         s->pts += av_rescale_q(in->nb_samples,
             (AVRational){ 1, outlink->sample_rate }, outlink->time_base);
         return ff_filter_frame(outlink, in);
-    } else if (s->status[0] && nb_samples >= s->nb_samples &&
-               ff_inlink_queued_samples(ctx->inputs[1]) >= s->nb_samples) {
+    } else if (ff_inlink_queued_samples(ctx->inputs[0]) >= s->nb_samples &&
+               ff_inlink_queued_samples(ctx->inputs[1]) >= s->nb_samples && s->cf0_eof) {
         if (s->overlap) {
             out = ff_get_audio_buffer(outlink, s->nb_samples);
             if (!out)
@@ -610,12 +531,12 @@ static int activate(AVFilterContext *ctx)
 
             s->crossfade_samples(out->extended_data, cf[0]->extended_data,
                                  cf[1]->extended_data,
-                                 s->nb_samples, out->ch_layout.nb_channels,
+                                 s->nb_samples, out->channels,
                                  s->curve, s->curve2);
             out->pts = s->pts;
             s->pts += av_rescale_q(s->nb_samples,
                 (AVRational){ 1, outlink->sample_rate }, outlink->time_base);
-            s->passthrough = 1;
+            s->crossfade_is_over = 1;
             av_frame_free(&cf[0]);
             av_frame_free(&cf[1]);
             return ff_filter_frame(outlink, out);
@@ -631,7 +552,7 @@ static int activate(AVFilterContext *ctx)
             }
 
             s->fade_samples(out->extended_data, cf[0]->extended_data, s->nb_samples,
-                            outlink->ch_layout.nb_channels, -1, s->nb_samples - 1, s->nb_samples, s->curve, 0., 1.);
+                            outlink->channels, -1, s->nb_samples - 1, s->nb_samples, s->curve);
             out->pts = s->pts;
             s->pts += av_rescale_q(s->nb_samples,
                 (AVRational){ 1, outlink->sample_rate }, outlink->time_base);
@@ -651,24 +572,23 @@ static int activate(AVFilterContext *ctx)
             }
 
             s->fade_samples(out->extended_data, cf[1]->extended_data, s->nb_samples,
-                            outlink->ch_layout.nb_channels, 1, 0, s->nb_samples, s->curve2, 0., 1.);
+                            outlink->channels, 1, 0, s->nb_samples, s->curve2);
             out->pts = s->pts;
             s->pts += av_rescale_q(s->nb_samples,
                 (AVRational){ 1, outlink->sample_rate }, outlink->time_base);
-            s->passthrough = 1;
+            s->crossfade_is_over = 1;
             av_frame_free(&cf[1]);
             return ff_filter_frame(outlink, out);
         }
-    } else if (ff_outlink_frame_wanted(outlink)) {
-        if (!s->status[0] && check_input(ctx->inputs[0]))
-            s->status[0] = AVERROR_EOF;
-        s->passthrough = !s->status[0];
-        if (check_input(ctx->inputs[1])) {
-            s->status[1] = AVERROR_EOF;
-            ff_outlink_set_status(outlink, AVERROR_EOF, AV_NOPTS_VALUE);
+    } else if (ff_outlink_frame_wanted(ctx->outputs[0])) {
+        if (!s->cf0_eof && ff_outlink_get_status(ctx->inputs[0])) {
+            s->cf0_eof = 1;
+        }
+        if (ff_outlink_get_status(ctx->inputs[1])) {
+            ff_outlink_set_status(ctx->outputs[0], AVERROR_EOF, AV_NOPTS_VALUE);
             return 0;
         }
-        if (!s->status[0])
+        if (!s->cf0_eof)
             ff_inlink_request_frame(ctx->inputs[0]);
         else
             ff_inlink_request_frame(ctx->inputs[1]);
@@ -683,7 +603,18 @@ static int acrossfade_config_output(AVFilterLink *outlink)
     AVFilterContext *ctx = outlink->src;
     AudioFadeContext *s  = ctx->priv;
 
+    if (ctx->inputs[0]->sample_rate != ctx->inputs[1]->sample_rate) {
+        av_log(ctx, AV_LOG_ERROR,
+               "Inputs must have the same sample rate "
+               "%d for in0 vs %d for in1\n",
+               ctx->inputs[0]->sample_rate, ctx->inputs[1]->sample_rate);
+        return AVERROR(EINVAL);
+    }
+
+    outlink->sample_rate = ctx->inputs[0]->sample_rate;
     outlink->time_base   = ctx->inputs[0]->time_base;
+    outlink->channel_layout = ctx->inputs[0]->channel_layout;
+    outlink->channels = ctx->inputs[0]->channels;
 
     switch (outlink->format) {
     case AV_SAMPLE_FMT_DBL:  s->crossfade_samples = crossfade_samples_dbl;  break;
@@ -701,27 +632,16 @@ static int acrossfade_config_output(AVFilterLink *outlink)
     return 0;
 }
 
-static AVFrame *get_audio_buffer(AVFilterLink *inlink, int nb_samples)
-{
-    AVFilterContext *ctx = inlink->dst;
-    AudioFadeContext *s = ctx->priv;
-
-    return s->passthrough ?
-        ff_null_get_audio_buffer   (inlink, nb_samples) :
-        ff_default_get_audio_buffer(inlink, nb_samples);
-}
-
 static const AVFilterPad avfilter_af_acrossfade_inputs[] = {
     {
         .name         = "crossfade0",
         .type         = AVMEDIA_TYPE_AUDIO,
-        .get_buffer.audio = get_audio_buffer,
     },
     {
         .name         = "crossfade1",
         .type         = AVMEDIA_TYPE_AUDIO,
-        .get_buffer.audio = get_audio_buffer,
     },
+    { NULL }
 };
 
 static const AVFilterPad avfilter_af_acrossfade_outputs[] = {
@@ -730,17 +650,18 @@ static const AVFilterPad avfilter_af_acrossfade_outputs[] = {
         .type          = AVMEDIA_TYPE_AUDIO,
         .config_props  = acrossfade_config_output,
     },
+    { NULL }
 };
 
-const AVFilter ff_af_acrossfade = {
+AVFilter ff_af_acrossfade = {
     .name          = "acrossfade",
     .description   = NULL_IF_CONFIG_SMALL("Cross fade two input audio streams."),
+    .query_formats = query_formats,
     .priv_size     = sizeof(AudioFadeContext),
     .activate      = activate,
     .priv_class    = &acrossfade_class,
-    FILTER_INPUTS(avfilter_af_acrossfade_inputs),
-    FILTER_OUTPUTS(avfilter_af_acrossfade_outputs),
-    FILTER_SAMPLEFMTS_ARRAY(sample_fmts),
+    .inputs        = avfilter_af_acrossfade_inputs,
+    .outputs       = avfilter_af_acrossfade_outputs,
 };
 
 #endif /* CONFIG_ACROSSFADE_FILTER */

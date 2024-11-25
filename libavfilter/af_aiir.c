@@ -20,15 +20,14 @@
 
 #include <float.h>
 
+#include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/opt.h"
 #include "libavutil/xga_font_data.h"
 #include "audio.h"
 #include "avfilter.h"
-#include "formats.h"
 #include "internal.h"
-#include "video.h"
 
 typedef struct ThreadData {
     AVFrame *in, *out;
@@ -81,6 +80,7 @@ static int query_formats(AVFilterContext *ctx)
 {
     AudioIIRContext *s = ctx->priv;
     AVFilterFormats *formats;
+    AVFilterChannelLayouts *layouts;
     enum AVSampleFormat sample_fmts[] = {
         AV_SAMPLE_FMT_DBLP,
         AV_SAMPLE_FMT_NONE
@@ -99,16 +99,25 @@ static int query_formats(AVFilterContext *ctx)
             return ret;
     }
 
-    ret = ff_set_common_all_channel_counts(ctx);
+    layouts = ff_all_channel_counts();
+    if (!layouts)
+        return AVERROR(ENOMEM);
+    ret = ff_set_common_channel_layouts(ctx, layouts);
     if (ret < 0)
         return ret;
 
     sample_fmts[0] = s->sample_format;
-    ret = ff_set_common_formats_from_list(ctx, sample_fmts);
+    formats = ff_make_format_list(sample_fmts);
+    if (!formats)
+        return AVERROR(ENOMEM);
+    ret = ff_set_common_formats(ctx, formats);
     if (ret < 0)
         return ret;
 
-    return ff_set_common_all_samplerates(ctx);
+    formats = ff_all_samplerates();
+    if (!formats)
+        return AVERROR(ENOMEM);
+    return ff_set_common_samplerates(ctx, formats);
 }
 
 #define IIR_CH(name, type, min, max, need_clipping)                     \
@@ -1265,35 +1274,35 @@ static int config_output(AVFilterLink *outlink)
     AVFilterLink *inlink = ctx->inputs[0];
     int ch, ret, i;
 
-    s->channels = inlink->ch_layout.nb_channels;
+    s->channels = inlink->channels;
     s->iir = av_calloc(s->channels, sizeof(*s->iir));
     if (!s->iir)
         return AVERROR(ENOMEM);
 
-    ret = read_gains(ctx, s->g_str, inlink->ch_layout.nb_channels);
+    ret = read_gains(ctx, s->g_str, inlink->channels);
     if (ret < 0)
         return ret;
 
-    ret = read_channels(ctx, inlink->ch_layout.nb_channels, s->a_str, 0);
+    ret = read_channels(ctx, inlink->channels, s->a_str, 0);
     if (ret < 0)
         return ret;
 
-    ret = read_channels(ctx, inlink->ch_layout.nb_channels, s->b_str, 1);
+    ret = read_channels(ctx, inlink->channels, s->b_str, 1);
     if (ret < 0)
         return ret;
 
     if (s->format == -1) {
-        convert_sf2tf(ctx, inlink->ch_layout.nb_channels);
+        convert_sf2tf(ctx, inlink->channels);
         s->format = 0;
     } else if (s->format == 2) {
-        convert_pr2zp(ctx, inlink->ch_layout.nb_channels);
+        convert_pr2zp(ctx, inlink->channels);
     } else if (s->format == 3) {
-        convert_pd2zp(ctx, inlink->ch_layout.nb_channels);
+        convert_pd2zp(ctx, inlink->channels);
     } else if (s->format == 4) {
-        convert_sp2zp(ctx, inlink->ch_layout.nb_channels);
+        convert_sp2zp(ctx, inlink->channels);
     }
     if (s->format > 0) {
-        check_stability(ctx, inlink->ch_layout.nb_channels);
+        check_stability(ctx, inlink->channels);
     }
 
     av_frame_free(&s->video);
@@ -1311,7 +1320,7 @@ static int config_output(AVFilterLink *outlink)
     if (s->format > 0 && s->process == 0) {
         av_log(ctx, AV_LOG_WARNING, "Direct processsing is not recommended for zp coefficients format.\n");
 
-        ret = convert_zp2tf(ctx, inlink->ch_layout.nb_channels);
+        ret = convert_zp2tf(ctx, inlink->channels);
         if (ret < 0)
             return ret;
     } else if (s->format == -2 && s->process > 0) {
@@ -1324,21 +1333,21 @@ static int config_output(AVFilterLink *outlink)
         av_log(ctx, AV_LOG_ERROR, "Parallel processing is not implemented for transfer function.\n");
         return AVERROR_PATCHWELCOME;
     } else if (s->format > 0 && s->process == 1) {
-        ret = decompose_zp2biquads(ctx, inlink->ch_layout.nb_channels);
+        ret = decompose_zp2biquads(ctx, inlink->channels);
         if (ret < 0)
             return ret;
     } else if (s->format > 0 && s->process == 2) {
         if (s->precision > 1)
             av_log(ctx, AV_LOG_WARNING, "Parallel processing is not recommended for fixed-point precisions.\n");
-        ret = decompose_zp2biquads(ctx, inlink->ch_layout.nb_channels);
+        ret = decompose_zp2biquads(ctx, inlink->channels);
         if (ret < 0)
             return ret;
-        ret = convert_serial2parallel(ctx, inlink->ch_layout.nb_channels);
+        ret = convert_serial2parallel(ctx, inlink->channels);
         if (ret < 0)
             return ret;
     }
 
-    for (ch = 0; s->format == -2 && ch < inlink->ch_layout.nb_channels; ch++) {
+    for (ch = 0; s->format == -2 && ch < inlink->channels; ch++) {
         IIRChannel *iir = &s->iir[ch];
 
         if (iir->nb_ab[0] != iir->nb_ab[1] + 1) {
@@ -1347,7 +1356,7 @@ static int config_output(AVFilterLink *outlink)
         }
     }
 
-    for (ch = 0; s->format == 0 && ch < inlink->ch_layout.nb_channels; ch++) {
+    for (ch = 0; s->format == 0 && ch < inlink->channels; ch++) {
         IIRChannel *iir = &s->iir[ch];
 
         for (i = 1; i < iir->nb_ab[0]; i++) {
@@ -1403,9 +1412,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 
     td.in  = in;
     td.out = out;
-    ff_filter_execute(ctx, s->iir_channel, &td, NULL, outlink->ch_layout.nb_channels);
+    ctx->internal->execute(ctx, s->iir_channel, &td, NULL, outlink->channels);
 
-    for (ch = 0; ch < outlink->ch_layout.nb_channels; ch++) {
+    for (ch = 0; ch < outlink->channels; ch++) {
         if (s->iir[ch].clippings > 0)
             av_log(ctx, AV_LOG_WARNING, "Channel %d clipping %d times. Please reduce gain.\n",
                    ch, s->iir[ch].clippings);
@@ -1475,7 +1484,7 @@ static av_cold int init(AVFilterContext *ctx)
         .config_props = config_output,
     };
 
-    ret = ff_append_outpad(ctx, &pad);
+    ret = ff_insert_outpad(ctx, 0, &pad);
     if (ret < 0)
         return ret;
 
@@ -1486,7 +1495,7 @@ static av_cold int init(AVFilterContext *ctx)
             .config_props = config_video,
         };
 
-        ret = ff_append_outpad(ctx, &vpad);
+        ret = ff_insert_outpad(ctx, 1, &vpad);
         if (ret < 0)
             return ret;
     }
@@ -1520,6 +1529,7 @@ static const AVFilterPad inputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .filter_frame = filter_frame,
     },
+    { NULL }
 };
 
 #define OFFSET(x) offsetof(AudioIIRContext, x)
@@ -1567,15 +1577,15 @@ static const AVOption aiir_options[] = {
 
 AVFILTER_DEFINE_CLASS(aiir);
 
-const AVFilter ff_af_aiir = {
+AVFilter ff_af_aiir = {
     .name          = "aiir",
     .description   = NULL_IF_CONFIG_SMALL("Apply Infinite Impulse Response filter with supplied coefficients."),
     .priv_size     = sizeof(AudioIIRContext),
     .priv_class    = &aiir_class,
     .init          = init,
     .uninit        = uninit,
-    FILTER_INPUTS(inputs),
-    FILTER_QUERY_FUNC(query_formats),
+    .query_formats = query_formats,
+    .inputs        = inputs,
     .flags         = AVFILTER_FLAG_DYNAMIC_OUTPUTS |
                      AVFILTER_FLAG_SLICE_THREADS,
 };

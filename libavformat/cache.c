@@ -29,10 +29,10 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
-#include "libavutil/file_open.h"
+#include "libavutil/internal.h"
 #include "libavutil/opt.h"
 #include "libavutil/tree.h"
-#include "avio.h"
+#include "avformat.h"
 #include <fcntl.h>
 #if HAVE_IO_H
 #include <io.h>
@@ -207,7 +207,7 @@ static int cache_read(URLContext *h, unsigned char *buf, int size)
     }
 
     r = ffurl_read(c->inner, buf, size);
-    if (r == AVERROR_EOF && size>0) {
+    if (r == 0 && size>0) {
         c->is_true_eof = 1;
         av_assert0(c->end >= c->logical_pos);
     }
@@ -269,7 +269,7 @@ resolve_eof:
                 if (whence == SEEK_SET)
                     size = FFMIN(sizeof(tmp), pos - c->logical_pos);
                 ret = cache_read(h, tmp, size);
-                if (ret == AVERROR_EOF && whence == SEEK_END) {
+                if (ret == 0 && whence == SEEK_END) {
                     av_assert0(c->is_true_eof);
                     goto resolve_eof;
                 }

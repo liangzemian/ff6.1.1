@@ -26,8 +26,6 @@
  * AC-3 encoder float/fixed template
  */
 
-#include "config_components.h"
-
 #include <stdint.h>
 
 #include "libavutil/attributes.h"
@@ -35,6 +33,7 @@
 #include "libavutil/mem_internal.h"
 
 #include "audiodsp.h"
+#include "internal.h"
 #include "ac3enc.h"
 #include "eac3enc.h"
 
@@ -98,8 +97,8 @@ static void apply_mdct(AC3EncodeContext *s)
                                          &input_samples[AC3_BLOCK_SIZE],
                                          s->mdct_window, AC3_BLOCK_SIZE);
 
-            s->tx_fn(s->tx, block->mdct_coef[ch+1],
-                     s->windowed_samples, sizeof(float));
+            s->mdct.mdct_calc(&s->mdct, block->mdct_coef[ch+1],
+                              s->windowed_samples);
         }
     }
 }

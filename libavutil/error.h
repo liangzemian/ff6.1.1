@@ -27,8 +27,6 @@
 #include <errno.h>
 #include <stddef.h>
 
-#include "macros.h"
-
 /**
  * @addtogroup lavu_error
  *
@@ -83,6 +81,10 @@
 #define AVERROR_HTTP_SERVER_ERROR  FFERRTAG(0xF8,'5','X','X')
 
 #define AV_ERROR_MAX_STRING_SIZE 64
+
+#define AVERROR_TCP_CONNECT_TIMEOUT -1001
+#define AVERROR_TCP_READ_TIMEOUT -1002
+#define AVERROR_TCP_WRITE_TIMEOUT -1003
 
 /**
  * Put a description of the AVERROR code errnum in errbuf.

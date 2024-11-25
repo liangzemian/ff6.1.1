@@ -28,6 +28,7 @@
 #include <inttypes.h>
 
 #include "libavutil/avassert.h"
+#include "internal.h"
 #include "avcodec.h"
 #include "h264.h"
 #include "h264dec.h"
@@ -48,7 +49,7 @@ static void pic_as_field(H264Ref *pic, const int parity)
     pic->poc = pic->parent->field_poc[parity == PICT_BOTTOM_FIELD];
 }
 
-static void ref_from_h264pic(H264Ref *dst, const H264Picture *src)
+static void ref_from_h264pic(H264Ref *dst, H264Picture *src)
 {
     memcpy(dst->data,     src->f->data,     sizeof(dst->data));
     memcpy(dst->linesize, src->f->linesize, sizeof(dst->linesize));
@@ -58,8 +59,7 @@ static void ref_from_h264pic(H264Ref *dst, const H264Picture *src)
     dst->parent = src;
 }
 
-static int split_field_copy(H264Ref *dest, const H264Picture *src,
-                            int parity, int id_add)
+static int split_field_copy(H264Ref *dest, H264Picture *src, int parity, int id_add)
 {
     int match = !!(src->reference & parity);
 
@@ -276,7 +276,7 @@ static void h264_fill_mbaff_ref_list(H264SliceContext *sl)
     int list, i, j;
     for (list = 0; list < sl->list_count; list++) {
         for (i = 0; i < sl->ref_count[list]; i++) {
-            const H264Ref *frame = &sl->ref_list[list][i];
+            H264Ref *frame = &sl->ref_list[list][i];
             H264Ref *field = &sl->ref_list[list][16 + 2 * i];
 
             field[0] = *frame;
@@ -572,8 +572,8 @@ void ff_h264_remove_all_refs(H264Context *h)
     assert(h->long_ref_count == 0);
 
     if (h->short_ref_count && !h->last_pic_for_ec.f->data[0]) {
-        ff_h264_unref_picture(&h->last_pic_for_ec);
-        ff_h264_ref_picture(&h->last_pic_for_ec, h->short_ref[0]);
+        ff_h264_unref_picture(h, &h->last_pic_for_ec);
+        ff_h264_ref_picture(h, &h->last_pic_for_ec, h->short_ref[0]);
     }
 
     for (i = 0; i < h->short_ref_count; i++) {
@@ -729,7 +729,7 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
             h->poc.frame_num = h->cur_pic_ptr->frame_num = 0;
             h->mmco_reset = 1;
             h->cur_pic_ptr->mmco_reset = 1;
-            for (j = 0; j < FF_ARRAY_ELEMS(h->last_pocs); j++)
+            for (j = 0; j < MAX_DELAYED_PIC_COUNT; j++)
                 h->last_pocs[j] = INT_MIN;
             break;
         default: av_assert0(0);
@@ -808,7 +808,7 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
 
     for (i = 0; i < FF_ARRAY_ELEMS(h->ps.pps_list); i++) {
         if (h->ps.pps_list[i]) {
-            const PPS *pps = h->ps.pps_list[i];
+            const PPS *pps = (const PPS *)h->ps.pps_list[i]->data;
             pps_ref_count[0] = FFMAX(pps_ref_count[0], pps->ref_count[0]);
             pps_ref_count[1] = FFMAX(pps_ref_count[1], pps->ref_count[1]);
         }
@@ -849,7 +849,7 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
     } else {
         sl->explicit_ref_marking = get_bits1(gb);
         if (sl->explicit_ref_marking) {
-            for (i = 0; i < FF_ARRAY_ELEMS(sl->mmco); i++) {
+            for (i = 0; i < MAX_MMCO_COUNT; i++) {
                 MMCOOpcode opcode = get_ue_golomb_31(gb);
 
                 mmco[i].opcode = opcode;

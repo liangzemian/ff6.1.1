@@ -22,9 +22,9 @@
  */
 
 #include <stdlib.h>
-#include <string.h>
 #include "url.h"
 #include "avformat.h"
+
 
 #define IJK_FF_PROTOCOL(x)                                                                          \
 extern URLProtocol ff_##x##_protocol;                                                               \
@@ -35,8 +35,7 @@ int ijkav_register_##x##_protocol(URLProtocol *protocol, int protocol_size)     
         av_log(NULL, AV_LOG_ERROR, "ijkav_register_##x##_protocol: ABI mismatch.\n");               \
         return -1;                                                                                  \
     }                                                                                               \
-    URLProtocol *non_const_ptr = (URLProtocol *)&ff_##x##_protocol;                                 \
-    memcpy(non_const_ptr, protocol, protocol_size);                                                 \
+    memcpy(&ff_##x##_protocol, protocol, protocol_size);                                            \
     return 0;                                                                                       \
 }
 

@@ -18,15 +18,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavutil/frame.h"
-#include "hwaccel_internal.h"
+#include "libavutil/pixdesc.h"
+#include "hwconfig.h"
 #include "vaapi_decode.h"
 #include "internal.h"
 #include "av1dec.h"
-#include "thread.h"
 
 typedef struct VAAPIAV1FrameRef {
-    AVFrame *frame;
+    ThreadFrame frame;
     int valid;
 } VAAPIAV1FrameRef;
 
@@ -41,13 +40,13 @@ typedef struct VAAPIAV1DecContext {
      * used to apply film grain and push to downstream.
     */
     VAAPIAV1FrameRef ref_tab[AV1_NUM_REF_FRAMES];
-    AVFrame *tmp_frame;
+    ThreadFrame tmp_frame;
 } VAAPIAV1DecContext;
 
 static VASurfaceID vaapi_av1_surface_id(AV1Frame *vf)
 {
     if (vf)
-        return ff_vaapi_get_surface_id(vf->f);
+        return ff_vaapi_get_surface_id(vf->tf.f);
     else
         return VA_INVALID_SURFACE;
 }
@@ -74,14 +73,20 @@ static int vaapi_av1_decode_init(AVCodecContext *avctx)
 {
     VAAPIAV1DecContext *ctx = avctx->internal->hwaccel_priv_data;
 
-    ctx->tmp_frame = av_frame_alloc();
-    if (!ctx->tmp_frame)
+    ctx->tmp_frame.f = av_frame_alloc();
+    if (!ctx->tmp_frame.f) {
+        av_log(avctx, AV_LOG_ERROR,
+               "Failed to allocate frame.\n");
         return AVERROR(ENOMEM);
+    }
 
     for (int i = 0; i < FF_ARRAY_ELEMS(ctx->ref_tab); i++) {
-        ctx->ref_tab[i].frame = av_frame_alloc();
-        if (!ctx->ref_tab[i].frame)
+        ctx->ref_tab[i].frame.f = av_frame_alloc();
+        if (!ctx->ref_tab[i].frame.f) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Failed to allocate reference table frame %d.\n", i);
             return AVERROR(ENOMEM);
+        }
         ctx->ref_tab[i].valid = 0;
     }
 
@@ -92,10 +97,15 @@ static int vaapi_av1_decode_uninit(AVCodecContext *avctx)
 {
     VAAPIAV1DecContext *ctx = avctx->internal->hwaccel_priv_data;
 
-    av_frame_free(&ctx->tmp_frame);
+    if (ctx->tmp_frame.f->buf[0])
+        ff_thread_release_buffer(avctx, &ctx->tmp_frame);
+    av_frame_free(&ctx->tmp_frame.f);
 
-    for (int i = 0; i < FF_ARRAY_ELEMS(ctx->ref_tab); i++)
-        av_frame_free(&ctx->ref_tab[i].frame);
+    for (int i = 0; i < FF_ARRAY_ELEMS(ctx->ref_tab); i++) {
+        if (ctx->ref_tab[i].frame.f->buf[0])
+            ff_thread_release_buffer(avctx, &ctx->ref_tab[i].frame);
+        av_frame_free(&ctx->ref_tab[i].frame.f);
+    }
 
     return ff_vaapi_decode_uninit(avctx);
 }
@@ -125,12 +135,12 @@ static int vaapi_av1_start_frame(AVCodecContext *avctx,
         goto fail;
 
     if (apply_grain) {
-        if (ctx->tmp_frame->buf[0])
-            av_frame_unref(ctx->tmp_frame);
-        err = ff_thread_get_buffer(avctx, ctx->tmp_frame, AV_GET_BUFFER_FLAG_REF);
+        if (ctx->tmp_frame.f->buf[0])
+            ff_thread_release_buffer(avctx, &ctx->tmp_frame);
+        err = ff_thread_get_buffer(avctx, &ctx->tmp_frame, AV_GET_BUFFER_FLAG_REF);
         if (err < 0)
             goto fail;
-        pic->output_surface = ff_vaapi_get_surface_id(ctx->tmp_frame);
+        pic->output_surface = ff_vaapi_get_surface_id(ctx->tmp_frame.f);
     } else {
         pic->output_surface = vaapi_av1_surface_id(&s->cur_frame);
     }
@@ -262,11 +272,11 @@ static int vaapi_av1_start_frame(AVCodecContext *avctx,
     };
 
     for (int i = 0; i < AV1_NUM_REF_FRAMES; i++) {
-        if (pic_param.pic_info_fields.bits.frame_type == AV1_FRAME_KEY && frame_header->show_frame)
+        if (pic_param.pic_info_fields.bits.frame_type == AV1_FRAME_KEY)
             pic_param.ref_frame_map[i] = VA_INVALID_ID;
         else
             pic_param.ref_frame_map[i] = ctx->ref_tab[i].valid ?
-                                         ff_vaapi_get_surface_id(ctx->ref_tab[i].frame) :
+                                         ff_vaapi_get_surface_id(ctx->ref_tab[i].frame.f) :
                                          vaapi_av1_surface_id(&s->ref[i]);
     }
     for (int i = 0; i < AV1_REFS_PER_FRAME; i++) {
@@ -370,11 +380,11 @@ static int vaapi_av1_end_frame(AVCodecContext *avctx)
 
     for (int i = 0; i < AV1_NUM_REF_FRAMES; i++) {
         if (header->refresh_frame_flags & (1 << i)) {
-            if (ctx->ref_tab[i].frame->buf[0])
-                av_frame_unref(ctx->ref_tab[i].frame);
+            if (ctx->ref_tab[i].frame.f->buf[0])
+                ff_thread_release_buffer(avctx, &ctx->ref_tab[i].frame);
 
             if (apply_grain) {
-                ret = av_frame_ref(ctx->ref_tab[i].frame, ctx->tmp_frame);
+                ret = ff_thread_ref_frame(&ctx->ref_tab[i].frame, &ctx->tmp_frame);
                 if (ret < 0)
                     return ret;
                 ctx->ref_tab[i].valid = 1;
@@ -422,11 +432,11 @@ static int vaapi_av1_decode_slice(AVCodecContext *avctx,
     return 0;
 }
 
-const FFHWAccel ff_av1_vaapi_hwaccel = {
-    .p.name               = "av1_vaapi",
-    .p.type               = AVMEDIA_TYPE_VIDEO,
-    .p.id                 = AV_CODEC_ID_AV1,
-    .p.pix_fmt            = AV_PIX_FMT_VAAPI,
+const AVHWAccel ff_av1_vaapi_hwaccel = {
+    .name                 = "av1_vaapi",
+    .type                 = AVMEDIA_TYPE_VIDEO,
+    .id                   = AV_CODEC_ID_AV1,
+    .pix_fmt              = AV_PIX_FMT_VAAPI,
     .start_frame          = vaapi_av1_start_frame,
     .end_frame            = vaapi_av1_end_frame,
     .decode_slice         = vaapi_av1_decode_slice,

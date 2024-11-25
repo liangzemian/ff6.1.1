@@ -19,7 +19,8 @@
  */
 
 #include "avlanguage.h"
-#include "libavutil/macros.h"
+#include "libavutil/avstring.h"
+#include "libavutil/common.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>

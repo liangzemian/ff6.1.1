@@ -45,8 +45,6 @@ static const enum AVPixelFormat supported_formats[] = {
     AV_PIX_FMT_YUV444P16,
     AV_PIX_FMT_0RGB32,
     AV_PIX_FMT_0BGR32,
-    AV_PIX_FMT_RGB32,
-    AV_PIX_FMT_BGR32,
 #if CONFIG_VULKAN
     AV_PIX_FMT_VULKAN,
 #endif
@@ -95,7 +93,7 @@ static void cuda_buffer_free(void *opaque, uint8_t *data)
     CHECK_CU(cu->cuCtxPopCurrent(&dummy));
 }
 
-static AVBufferRef *cuda_pool_alloc(void *opaque, size_t size)
+static AVBufferRef *cuda_pool_alloc(void *opaque, buffer_size_t size)
 {
     AVHWFramesContext        *ctx = opaque;
     AVHWDeviceContext *device_ctx = ctx->device_ctx;
@@ -290,7 +288,7 @@ static void cuda_device_uninit(AVHWDeviceContext *device_ctx)
         if (hwctx->internal->is_allocated && hwctx->cuda_ctx) {
             if (hwctx->internal->flags & AV_CUDA_USE_PRIMARY_CONTEXT)
                 CHECK_CU(cu->cuDevicePrimaryCtxRelease(hwctx->internal->cuda_device));
-            else if (!(hwctx->internal->flags & AV_CUDA_USE_CURRENT_CONTEXT))
+            else
                 CHECK_CU(cu->cuCtxDestroy(hwctx->cuda_ctx));
 
             hwctx->cuda_ctx = NULL;
@@ -361,11 +359,6 @@ static int cuda_context_init(AVHWDeviceContext *device_ctx, int flags) {
                                                     hwctx->internal->cuda_device));
         if (ret < 0)
             return ret;
-    } else if (flags & AV_CUDA_USE_CURRENT_CONTEXT) {
-        ret = CHECK_CU(cu->cuCtxGetCurrent(&hwctx->cuda_ctx));
-        if (ret < 0)
-            return ret;
-        av_log(device_ctx, AV_LOG_INFO, "Using current CUDA context.\n");
     } else {
         ret = CHECK_CU(cu->cuCtxCreate(&hwctx->cuda_ctx, desired_flags,
                                        hwctx->internal->cuda_device));
@@ -383,43 +376,6 @@ static int cuda_context_init(AVHWDeviceContext *device_ctx, int flags) {
     return 0;
 }
 
-static int cuda_flags_from_opts(AVHWDeviceContext *device_ctx,
-                                AVDictionary *opts, int *flags)
-{
-    AVDictionaryEntry *primary_ctx_opt = av_dict_get(opts, "primary_ctx", NULL, 0);
-    AVDictionaryEntry *current_ctx_opt = av_dict_get(opts, "current_ctx", NULL, 0);
-
-    int use_primary_ctx = 0, use_current_ctx = 0;
-    if (primary_ctx_opt)
-        use_primary_ctx = strtol(primary_ctx_opt->value, NULL, 10);
-
-    if (current_ctx_opt)
-        use_current_ctx = strtol(current_ctx_opt->value, NULL, 10);
-
-    if (use_primary_ctx && use_current_ctx) {
-        av_log(device_ctx, AV_LOG_ERROR, "Requested both primary and current CUDA context simultaneously.\n");
-        return AVERROR(EINVAL);
-    }
-
-    if (primary_ctx_opt && use_primary_ctx) {
-        av_log(device_ctx, AV_LOG_VERBOSE, "Using CUDA primary device context\n");
-        *flags |= AV_CUDA_USE_PRIMARY_CONTEXT;
-    } else if (primary_ctx_opt) {
-        av_log(device_ctx, AV_LOG_VERBOSE, "Disabling use of CUDA primary device context\n");
-        *flags &= ~AV_CUDA_USE_PRIMARY_CONTEXT;
-    }
-
-    if (current_ctx_opt && use_current_ctx) {
-        av_log(device_ctx, AV_LOG_VERBOSE, "Using CUDA current device context\n");
-        *flags |= AV_CUDA_USE_CURRENT_CONTEXT;
-    } else if (current_ctx_opt) {
-        av_log(device_ctx, AV_LOG_VERBOSE, "Disabling use of CUDA current device context\n");
-        *flags &= ~AV_CUDA_USE_CURRENT_CONTEXT;
-    }
-
-    return 0;
-}
-
 static int cuda_device_create(AVHWDeviceContext *device_ctx,
                               const char *device,
                               AVDictionary *opts, int flags)
@@ -428,15 +384,10 @@ static int cuda_device_create(AVHWDeviceContext *device_ctx,
     CudaFunctions *cu;
     int ret, device_idx = 0;
 
-    ret = cuda_flags_from_opts(device_ctx, opts, &flags);
-    if (ret < 0)
-        goto error;
-
     if (device)
         device_idx = strtol(device, NULL, 0);
 
-    ret = cuda_device_init(device_ctx);
-    if (ret < 0)
+    if (cuda_device_init(device_ctx) < 0)
         goto error;
 
     cu = hwctx->internal->cuda_dl;
@@ -457,7 +408,7 @@ static int cuda_device_create(AVHWDeviceContext *device_ctx,
 
 error:
     cuda_device_uninit(device_ctx);
-    return ret;
+    return AVERROR_UNKNOWN;
 }
 
 static int cuda_device_derive(AVHWDeviceContext *device_ctx,
@@ -466,51 +417,38 @@ static int cuda_device_derive(AVHWDeviceContext *device_ctx,
     AVCUDADeviceContext *hwctx = device_ctx->hwctx;
     CudaFunctions *cu;
     const char *src_uuid = NULL;
-#if CONFIG_VULKAN
-    VkPhysicalDeviceIDProperties vk_idp;
-#endif
     int ret, i, device_count;
 
-    ret = cuda_flags_from_opts(device_ctx, opts, &flags);
-    if (ret < 0)
-        goto error;
-
 #if CONFIG_VULKAN
-    vk_idp = (VkPhysicalDeviceIDProperties) {
+    VkPhysicalDeviceIDProperties vk_idp = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES,
     };
 #endif
 
     switch (src_ctx->type) {
 #if CONFIG_VULKAN
-#define TYPE PFN_vkGetPhysicalDeviceProperties2
     case AV_HWDEVICE_TYPE_VULKAN: {
         AVVulkanDeviceContext *vkctx = src_ctx->hwctx;
-        TYPE prop_fn = (TYPE)vkctx->get_proc_addr(vkctx->inst, "vkGetPhysicalDeviceProperties2");
         VkPhysicalDeviceProperties2 vk_dev_props = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
             .pNext = &vk_idp,
         };
-        prop_fn(vkctx->phys_dev, &vk_dev_props);
+        vkGetPhysicalDeviceProperties2(vkctx->phys_dev, &vk_dev_props);
         src_uuid = vk_idp.deviceUUID;
         break;
     }
-#undef TYPE
 #endif
     default:
-        ret = AVERROR(ENOSYS);
-        goto error;
+        return AVERROR(ENOSYS);
     }
 
     if (!src_uuid) {
         av_log(device_ctx, AV_LOG_ERROR,
                "Failed to get UUID of source device.\n");
-        ret = AVERROR(EINVAL);
         goto error;
     }
 
-    ret = cuda_device_init(device_ctx);
-    if (ret < 0)
+    if (cuda_device_init(device_ctx) < 0)
         goto error;
 
     cu = hwctx->internal->cuda_dl;
@@ -555,7 +493,7 @@ static int cuda_device_derive(AVHWDeviceContext *device_ctx,
 
 error:
     cuda_device_uninit(device_ctx);
-    return ret;
+    return AVERROR_UNKNOWN;
 }
 
 const HWContextType ff_hwcontext_type_cuda = {

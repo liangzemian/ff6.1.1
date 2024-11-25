@@ -26,14 +26,12 @@
  */
 
 #include <inttypes.h>
-#include <time.h>
 
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/intfloat.h"
 #include "libavutil/time_internal.h"
 #include "avformat.h"
-#include "demux.h"
 #include "internal.h"
 #include "wtv.h"
 #include "mpegts.h"
@@ -43,7 +41,7 @@
     "%08"PRIx32"-%04"PRIx16"-%04"PRIx16"-%02x%02x%02x%02x%02x%02x%02x%02x"
 #define ARG_PRETTY_GUID(g) \
     AV_RL32(g),AV_RL16(g+4),AV_RL16(g+6),g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]
-#define LEN_PRETTY_GUID 35
+#define LEN_PRETTY_GUID 34
 
 /*
  * File system routines
@@ -436,6 +434,7 @@ static void get_attachment(AVFormatContext *s, AVIOContext *pb, int length)
     char description[1024];
     unsigned int filesize;
     AVStream *st;
+    int ret;
     int64_t pos = avio_tell(pb);
 
     avio_get_str16le(pb, INT_MAX, mime, sizeof(mime));
@@ -448,74 +447,90 @@ static void get_attachment(AVFormatContext *s, AVIOContext *pb, int length)
     if (!filesize)
         goto done;
 
-    if (ff_add_attached_pic(s, NULL, pb, NULL, filesize) < 0)
+    st = avformat_new_stream(s, NULL);
+    if (!st)
         goto done;
-    st = s->streams[s->nb_streams - 1];
     av_dict_set(&st->metadata, "title", description, 0);
+    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
     st->codecpar->codec_id   = AV_CODEC_ID_MJPEG;
     st->id = -1;
+    ret = av_get_packet(pb, &st->attached_pic, filesize);
+    if (ret < 0)
+        goto done;
+    st->attached_pic.stream_index = st->index;
+    st->attached_pic.flags       |= AV_PKT_FLAG_KEY;
+    st->disposition              |= AV_DISPOSITION_ATTACHED_PIC;
 done:
     avio_seek(pb, pos + length, SEEK_SET);
 }
 
 static void get_tag(AVFormatContext *s, AVIOContext *pb, const char *key, int type, int length)
 {
-    char buf[LEN_PRETTY_GUID + 1], *bufp = buf;
-    unsigned dict_flags = 0;
+    int buf_size;
+    char *buf;
 
     if (!strcmp(key, "WM/MediaThumbType")) {
         avio_skip(pb, length);
         return;
     }
 
+    buf_size = FFMAX(2*length, LEN_PRETTY_GUID) + 1;
+    buf = av_malloc(buf_size);
+    if (!buf)
+        return;
+
     if (type == 0 && length == 4) {
-        snprintf(buf, sizeof(buf), "%u", avio_rl32(pb));
+        snprintf(buf, buf_size, "%u", avio_rl32(pb));
     } else if (type == 1) {
-        int buflen = FFMIN(length + length / 2U + 1, INT_MAX);
-        bufp = av_malloc(buflen);
-        if (!bufp)
-            return;
-        avio_get_str16le(pb, length, bufp, buflen);
-        if (!*bufp) {
-           av_free(bufp);
+        avio_get_str16le(pb, length, buf, buf_size);
+        if (!strlen(buf)) {
+           av_free(buf);
            return;
         }
-        dict_flags = AV_DICT_DONT_STRDUP_VAL;
     } else if (type == 3 && length == 4) {
         strcpy(buf, avio_rl32(pb) ? "true" : "false");
     } else if (type == 4 && length == 8) {
         int64_t num = avio_rl64(pb);
         if (!strcmp(key, "WM/EncodingTime") ||
             !strcmp(key, "WM/MediaOriginalBroadcastDateTime")) {
-            if (filetime_to_iso8601(buf, sizeof(buf), num) < 0)
+            if (filetime_to_iso8601(buf, buf_size, num) < 0) {
+                av_free(buf);
                 return;
+            }
         } else if (!strcmp(key, "WM/WMRVEncodeTime") ||
                    !strcmp(key, "WM/WMRVEndTime")) {
-            if (crazytime_to_iso8601(buf, sizeof(buf), num) < 0)
+            if (crazytime_to_iso8601(buf, buf_size, num) < 0) {
+                av_free(buf);
                 return;
+            }
         } else if (!strcmp(key, "WM/WMRVExpirationDate")) {
-            if (oledate_to_iso8601(buf, sizeof(buf), num) < 0)
+            if (oledate_to_iso8601(buf, buf_size, num) < 0 ) {
+                av_free(buf);
                 return;
+            }
         } else if (!strcmp(key, "WM/WMRVBitrate"))
-            snprintf(buf, sizeof(buf), "%f", av_int2double(num));
+            snprintf(buf, buf_size, "%f", av_int2double(num));
         else
-            snprintf(buf, sizeof(buf), "%"PRIi64, num);
+            snprintf(buf, buf_size, "%"PRIi64, num);
     } else if (type == 5 && length == 2) {
-        snprintf(buf, sizeof(buf), "%u", avio_rl16(pb));
+        snprintf(buf, buf_size, "%u", avio_rl16(pb));
     } else if (type == 6 && length == 16) {
         ff_asf_guid guid;
         avio_read(pb, guid, 16);
-        snprintf(buf, sizeof(buf), PRI_PRETTY_GUID, ARG_PRETTY_GUID(guid));
+        snprintf(buf, buf_size, PRI_PRETTY_GUID, ARG_PRETTY_GUID(guid));
     } else if (type == 2 && !strcmp(key, "WM/Picture")) {
         get_attachment(s, pb, length);
+        av_freep(&buf);
         return;
     } else {
+        av_freep(&buf);
         av_log(s, AV_LOG_WARNING, "unsupported metadata entry; key:%s, type:%d, length:0x%x\n", key, type, length);
         avio_skip(pb, length);
         return;
     }
 
-    av_dict_set(&s->metadata, key, bufp, dict_flags);
+    av_dict_set(&s->metadata, key, buf, 0);
+    av_freep(&buf);
 }
 
 /**
@@ -530,7 +545,7 @@ static void parse_legacy_attrib(AVFormatContext *s, AVIOContext *pb)
         ff_get_guid(pb, &guid);
         type   = avio_rl32(pb);
         length = avio_rl32(pb);
-        if (length <= 0)
+        if (!length)
             break;
         if (ff_guidcmp(&guid, ff_metadata_guid)) {
             av_log(s, AV_LOG_WARNING, "unknown guid "FF_PRI_GUID", expected metadata_guid; "
@@ -577,9 +592,11 @@ static void parse_mpeg1waveformatex(AVStream *st)
     switch (AV_RL16(st->codecpar->extradata + 6)) {
     case 1 :
     case 2 :
-    case 4 : st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+    case 4 : st->codecpar->channels       = 2;
+             st->codecpar->channel_layout = AV_CH_LAYOUT_STEREO;
              break;
-    case 8 : st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
+    case 8 : st->codecpar->channels       = 1;
+             st->codecpar->channel_layout = AV_CH_LAYOUT_MONO;
              break;
     }
 }
@@ -609,7 +626,7 @@ static AVStream * new_stream(AVFormatContext *s, AVStream *st, int sid, int code
         st->priv_data = wst;
     }
     st->codecpar->codec_type = codec_type;
-    ffstream(st)->need_parsing = AVSTREAM_PARSE_FULL;
+    st->need_parsing      = AVSTREAM_PARSE_FULL;
     avpriv_set_pts_info(st, 64, 1, 10000000);
     return st;
 }
@@ -1117,7 +1134,7 @@ static int read_close(AVFormatContext *s)
     return 0;
 }
 
-const AVInputFormat ff_wtv_demuxer = {
+AVInputFormat ff_wtv_demuxer = {
     .name           = "wtv",
     .long_name      = NULL_IF_CONFIG_SMALL("Windows Television (WTV)"),
     .priv_data_size = sizeof(WtvContext),

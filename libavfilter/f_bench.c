@@ -16,14 +16,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "config_components.h"
-
 #include "libavutil/opt.h"
 #include "libavutil/time.h"
-#include "audio.h"
 #include "avfilter.h"
+#include "formats.h"
 #include "internal.h"
-#include "video.h"
 
 enum BenchAction {
     ACTION_START,
@@ -99,17 +96,25 @@ static const AVFilterPad bench_inputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .filter_frame = filter_frame,
     },
+    { NULL }
 };
 
-const AVFilter ff_vf_bench = {
+static const AVFilterPad bench_outputs[] = {
+    {
+        .name = "default",
+        .type = AVMEDIA_TYPE_VIDEO,
+    },
+    { NULL }
+};
+
+AVFilter ff_vf_bench = {
     .name          = "bench",
     .description   = NULL_IF_CONFIG_SMALL("Benchmark part of a filtergraph."),
     .priv_size     = sizeof(BenchContext),
     .init          = init,
-    FILTER_INPUTS(bench_inputs),
-    FILTER_OUTPUTS(ff_video_default_filterpad),
+    .inputs        = bench_inputs,
+    .outputs       = bench_outputs,
     .priv_class    = &bench_class,
-    .flags         = AVFILTER_FLAG_METADATA_ONLY,
 };
 #endif /* CONFIG_BENCH_FILTER */
 
@@ -123,16 +128,24 @@ static const AVFilterPad abench_inputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .filter_frame = filter_frame,
     },
+    { NULL }
 };
 
-const AVFilter ff_af_abench = {
+static const AVFilterPad abench_outputs[] = {
+    {
+        .name = "default",
+        .type = AVMEDIA_TYPE_AUDIO,
+    },
+    { NULL }
+};
+
+AVFilter ff_af_abench = {
     .name          = "abench",
     .description   = NULL_IF_CONFIG_SMALL("Benchmark part of a filtergraph."),
     .priv_size     = sizeof(BenchContext),
     .init          = init,
-    FILTER_INPUTS(abench_inputs),
-    FILTER_OUTPUTS(ff_audio_default_filterpad),
+    .inputs        = abench_inputs,
+    .outputs       = abench_outputs,
     .priv_class    = &abench_class,
-    .flags         = AVFILTER_FLAG_METADATA_ONLY,
 };
 #endif /* CONFIG_ABENCH_FILTER */

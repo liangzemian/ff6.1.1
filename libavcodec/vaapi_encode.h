@@ -29,7 +29,6 @@
 
 #include "libavutil/hwcontext.h"
 #include "libavutil/hwcontext_vaapi.h"
-#include "libavutil/fifo.h"
 
 #include "avcodec.h"
 #include "hwconfig.h"
@@ -48,8 +47,6 @@ enum {
     MAX_TILE_ROWS          = 22,
     // A.4.1: table A.6 allows at most 20 tile columns for any level.
     MAX_TILE_COLS          = 20,
-    MAX_ASYNC_DEPTH        = 64,
-    MAX_REFERENCE_LIST_NUM = 2,
 };
 
 extern const AVCodecHWConfigInternal *const ff_vaapi_encode_hw_configs[];
@@ -76,11 +73,7 @@ typedef struct VAAPIEncodePicture {
     int64_t         display_order;
     int64_t         encode_order;
     int64_t         pts;
-    int64_t         duration;
     int             force_idr;
-
-    void           *opaque;
-    AVBufferRef    *opaque_ref;
 
 #if VA_CHECK_VERSION(1, 0, 0)
     // ROI regions.
@@ -117,11 +110,10 @@ typedef struct VAAPIEncodePicture {
     // but not if it isn't.
     int                     nb_dpb_pics;
     struct VAAPIEncodePicture *dpb[MAX_DPB_SIZE];
-    // The reference pictures used in decoding this picture. If they are
-    // used by later pictures they will also appear in the DPB. ref[0][] for
-    // previous reference frames. ref[1][] for future reference frames.
-    int                     nb_refs[MAX_REFERENCE_LIST_NUM];
-    struct VAAPIEncodePicture *refs[MAX_REFERENCE_LIST_NUM][MAX_PICTURE_REFERENCES];
+    // The reference pictures used in decoding this picture.  If they are
+    // used by later pictures they will also appear in the DPB.
+    int                     nb_refs;
+    struct VAAPIEncodePicture *refs[MAX_PICTURE_REFERENCES];
     // The previous reference picture in encode order.  Must be in at least
     // one of the reference list and DPB list.
     struct VAAPIEncodePicture *prev;
@@ -133,21 +125,10 @@ typedef struct VAAPIEncodePicture {
 
     int          nb_slices;
     VAAPIEncodeSlice *slices;
-
-    /**
-     * indicate if current frame is an independent frame that the coded data
-     * can be pushed to downstream directly. Coded of non-independent frame
-     * data will be concatenated into next independent frame.
-     */
-    int non_independent_frame;
-    /** Tail data of current pic, used only for repeat header of AV1. */
-    char tail_data[MAX_PARAM_BUFFER_SIZE];
-    /** Byte length of tail_data. */
-    size_t tail_size;
 } VAAPIEncodePicture;
 
 typedef struct VAAPIEncodeProfile {
-    // lavc profile value (AV_PROFILE_*).
+    // lavc profile value (FF_PROFILE_*).
     int       av_profile;
     // Supported bit depth.
     int       depth;
@@ -207,9 +188,6 @@ typedef struct VAAPIEncodeContext {
 
     // Desired B frame reference depth.
     int             desired_b_depth;
-
-    // Max Frame Size
-    int             max_frame_size;
 
     // Explicitly set RC mode (otherwise attempt to pick from
     // available modes).
@@ -288,7 +266,6 @@ typedef struct VAAPIEncodeContext {
     VAEncMiscParameterRateControl rc_params;
     VAEncMiscParameterHRD        hrd_params;
     VAEncMiscParameterFrameRate   fr_params;
-    VAEncMiscParameterBufferMaxFrameSize mfs_params;
 #if VA_CHECK_VERSION(0, 36, 0)
     VAEncMiscParameterBufferQualityLevel quality_params;
 #endif
@@ -303,9 +280,8 @@ typedef struct VAAPIEncodeContext {
     // Current encoding window, in display (input) order.
     VAAPIEncodePicture *pic_start, *pic_end;
     // The next picture to use as the previous reference picture in
-    // encoding order. Order from small to large in encoding order.
-    VAAPIEncodePicture *next_prev[MAX_PICTURE_REFERENCES];
-    int                 nb_next_prev;
+    // encoding order.
+    VAAPIEncodePicture *next_prev;
 
     // Next input order index (display order).
     int64_t         input_order;
@@ -321,8 +297,7 @@ typedef struct VAAPIEncodeContext {
     // Timestamp handling.
     int64_t         first_pts;
     int64_t         dts_pts_diff;
-    int64_t         ts_ring[MAX_REORDER_DELAY * 3 +
-                            MAX_ASYNC_DEPTH];
+    int64_t         ts_ring[MAX_REORDER_DELAY * 3];
 
     // Slice structure.
     int slice_block_rows;
@@ -353,7 +328,6 @@ typedef struct VAAPIEncodeContext {
     int idr_counter;
     int gop_counter;
     int end_of_stream;
-    int p_to_gpb;
 
     // Whether the driver supports ROI at all.
     int             roi_allowed;
@@ -371,23 +345,6 @@ typedef struct VAAPIEncodeContext {
     int             roi_warned;
 
     AVFrame         *frame;
-
-    // Whether the driver support vaSyncBuffer
-    int             has_sync_buffer_func;
-    // Store buffered pic
-    AVFifo          *encode_fifo;
-    // Max number of frame buffered in encoder.
-    int             async_depth;
-
-    /** Head data for current output pkt, used only for AV1. */
-    //void  *header_data;
-    //size_t header_data_size;
-
-    /** Buffered coded data of a pic if it is an non-independent frame. */
-    AVBufferRef     *coded_buffer_ref;
-
-    /** Tail data of a pic, now only used for av1 repeat frame header. */
-    AVPacket        *tail_pkt;
 } VAAPIEncodeContext;
 
 enum {
@@ -404,14 +361,11 @@ enum {
     // Codec supports non-IDR key pictures (that is, key pictures do
     // not necessarily empty the DPB).
     FLAG_NON_IDR_KEY_PICTURES  = 1 << 5,
-    // Codec output packet without timestamp delay, which means the
-    // output packet has same PTS and DTS.
-    FLAG_TIMESTAMP_NO_DELAY    = 1 << 6,
 };
 
 typedef struct VAAPIEncodeType {
     // List of supported profiles and corresponding VAAPI profiles.
-    // (Must end with AV_PROFILE_UNKNOWN.)
+    // (Must end with FF_PROFILE_UNKNOWN.)
     const VAAPIEncodeProfile *profiles;
 
     // Codec feature flags.
@@ -420,13 +374,6 @@ typedef struct VAAPIEncodeType {
     // Default quality for this codec - used as quantiser or RC quality
     // factor depending on RC mode.
     int default_quality;
-
-    // Determine encode parameters like block sizes for surface alignment
-    // and slices. This may need to query the profile and entrypoint,
-    // which will be available when this function is called. If not set,
-    // assume that all blocks are 16x16 and that surfaces should be
-    // aligned to match this.
-    int (*get_encoder_caps)(AVCodecContext *avctx);
 
     // Perform any extra codec-specific configuration after the
     // codec context is initialised (set up the private data and
@@ -508,16 +455,7 @@ int ff_vaapi_encode_close(AVCodecContext *avctx);
     { "b_depth", \
       "Maximum B-frame reference depth", \
       OFFSET(common.desired_b_depth), AV_OPT_TYPE_INT, \
-      { .i64 = 1 }, 1, INT_MAX, FLAGS }, \
-    { "async_depth", "Maximum processing parallelism. " \
-      "Increase this to improve single channel performance. This option " \
-      "doesn't work if driver doesn't implement vaSyncBuffer function.", \
-      OFFSET(common.async_depth), AV_OPT_TYPE_INT, \
-      { .i64 = 2 }, 1, MAX_ASYNC_DEPTH, FLAGS }, \
-    { "max_frame_size", \
-      "Maximum frame size (in bytes)",\
-      OFFSET(common.max_frame_size), AV_OPT_TYPE_INT, \
-      { .i64 = 0 }, 0, INT_MAX, FLAGS }
+      { .i64 = 1 }, 1, INT_MAX, FLAGS }
 
 #define VAAPI_ENCODE_RC_MODE(name, desc) \
     { #name, desc, 0, AV_OPT_TYPE_CONST, { .i64 = RC_MODE_ ## name }, \

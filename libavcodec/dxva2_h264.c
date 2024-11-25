@@ -20,15 +20,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "config_components.h"
-
 #include "libavutil/avassert.h"
 
 #include "dxva2_internal.h"
 #include "h264dec.h"
 #include "h264data.h"
 #include "h264_ps.h"
-#include "hwaccel_internal.h"
 #include "mpegutils.h"
 
 struct dxva2_picture_context {
@@ -517,11 +514,11 @@ static int dxva2_h264_end_frame(AVCodecContext *avctx)
 }
 
 #if CONFIG_H264_DXVA2_HWACCEL
-const FFHWAccel ff_h264_dxva2_hwaccel = {
-    .p.name         = "h264_dxva2",
-    .p.type         = AVMEDIA_TYPE_VIDEO,
-    .p.id           = AV_CODEC_ID_H264,
-    .p.pix_fmt      = AV_PIX_FMT_DXVA2_VLD,
+const AVHWAccel ff_h264_dxva2_hwaccel = {
+    .name           = "h264_dxva2",
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = AV_CODEC_ID_H264,
+    .pix_fmt        = AV_PIX_FMT_DXVA2_VLD,
     .init           = ff_dxva2_decode_init,
     .uninit         = ff_dxva2_decode_uninit,
     .start_frame    = dxva2_h264_start_frame,
@@ -534,11 +531,11 @@ const FFHWAccel ff_h264_dxva2_hwaccel = {
 #endif
 
 #if CONFIG_H264_D3D11VA_HWACCEL
-const FFHWAccel ff_h264_d3d11va_hwaccel = {
-    .p.name         = "h264_d3d11va",
-    .p.type         = AVMEDIA_TYPE_VIDEO,
-    .p.id           = AV_CODEC_ID_H264,
-    .p.pix_fmt      = AV_PIX_FMT_D3D11VA_VLD,
+const AVHWAccel ff_h264_d3d11va_hwaccel = {
+    .name           = "h264_d3d11va",
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = AV_CODEC_ID_H264,
+    .pix_fmt        = AV_PIX_FMT_D3D11VA_VLD,
     .init           = ff_dxva2_decode_init,
     .uninit         = ff_dxva2_decode_uninit,
     .start_frame    = dxva2_h264_start_frame,
@@ -551,11 +548,11 @@ const FFHWAccel ff_h264_d3d11va_hwaccel = {
 #endif
 
 #if CONFIG_H264_D3D11VA2_HWACCEL
-const FFHWAccel ff_h264_d3d11va2_hwaccel = {
-    .p.name         = "h264_d3d11va2",
-    .p.type         = AVMEDIA_TYPE_VIDEO,
-    .p.id           = AV_CODEC_ID_H264,
-    .p.pix_fmt      = AV_PIX_FMT_D3D11,
+const AVHWAccel ff_h264_d3d11va2_hwaccel = {
+    .name           = "h264_d3d11va2",
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = AV_CODEC_ID_H264,
+    .pix_fmt        = AV_PIX_FMT_D3D11,
     .init           = ff_dxva2_decode_init,
     .uninit         = ff_dxva2_decode_uninit,
     .start_frame    = dxva2_h264_start_frame,

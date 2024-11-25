@@ -38,8 +38,6 @@ static const struct {
     { AV_CPU_FLAG_ARMV8,     "armv8"      },
     { AV_CPU_FLAG_NEON,      "neon"       },
     { AV_CPU_FLAG_VFP,       "vfp"        },
-    { AV_CPU_FLAG_DOTPROD,   "dotprod"    },
-    { AV_CPU_FLAG_I8MM,      "i8mm"       },
 #elif ARCH_ARM
     { AV_CPU_FLAG_ARMV5TE,   "armv5te"    },
     { AV_CPU_FLAG_ARMV6,     "armv6"      },
@@ -79,11 +77,6 @@ static const struct {
     { AV_CPU_FLAG_BMI2,      "bmi2"       },
     { AV_CPU_FLAG_AESNI,     "aesni"      },
     { AV_CPU_FLAG_AVX512,    "avx512"     },
-    { AV_CPU_FLAG_AVX512ICL, "avx512icl"  },
-    { AV_CPU_FLAG_SLOW_GATHER, "slowgather" },
-#elif ARCH_LOONGARCH
-    { AV_CPU_FLAG_LSX,       "lsx"        },
-    { AV_CPU_FLAG_LASX,      "lasx"       },
 #endif
     { 0 }
 };
@@ -106,7 +99,7 @@ int main(int argc, char **argv)
     int cpu_flags_raw = av_get_cpu_flags();
     int cpu_flags_eff;
     int cpu_count = av_cpu_count();
-    const char *threads = "auto";
+    char threads[5] = "auto";
     int i;
 
     for(i = 0; cpu_flag_tab[i].flag; i++) {
@@ -136,7 +129,11 @@ int main(int argc, char **argv)
         }
         case 't':
         {
-            threads = optarg;
+            int len = av_strlcpy(threads, optarg, sizeof(threads));
+            if (len >= sizeof(threads)) {
+                fprintf(stderr, "Invalid thread count '%s'\n", optarg);
+                return 2;
+            }
         }
         }
     }

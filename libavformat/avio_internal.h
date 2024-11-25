@@ -20,91 +20,21 @@
 #define AVFORMAT_AVIO_INTERNAL_H
 
 #include "avio.h"
+#include "url.h"
 
 #include "libavutil/log.h"
 
 extern const AVClass ff_avio_class;
 
-typedef struct FFIOContext {
-    AVIOContext pub;
-    /**
-     * A callback that is used instead of short_seek_threshold.
-     */
-    int (*short_seek_get)(void *opaque);
-
-    /**
-     * Threshold to favor readahead over seek.
-     */
-    int short_seek_threshold;
-
-    enum AVIODataMarkerType current_type;
-    int64_t last_time;
-
-    /**
-     * max filesize, used to limit allocations
-     */
-    int64_t maxsize;
-
-    /**
-     * Bytes read statistic
-     */
-    int64_t bytes_read;
-
-    /**
-     * Bytes written statistic
-     */
-    int64_t bytes_written;
-
-    /**
-     * seek statistic
-     */
-    int seek_count;
-
-    /**
-     * writeout statistic
-     */
-    int writeout_count;
-
-    /**
-     * Original buffer size
-     * used after probing to ensure seekback and to reset the buffer size
-     */
-    int orig_buffer_size;
-
-    /**
-     * Written output size
-     * is updated each time a successful writeout ends up further position-wise
-     */
-    int64_t written_output_size;
-} FFIOContext;
-
-static av_always_inline FFIOContext *ffiocontext(AVIOContext *ctx)
-{
-    return (FFIOContext*)ctx;
-}
-
-void ffio_init_context(FFIOContext *s,
+int ffio_init_context(AVIOContext *s,
                   unsigned char *buffer,
                   int buffer_size,
                   int write_flag,
                   void *opaque,
                   int (*read_packet)(void *opaque, uint8_t *buf, int buf_size),
-#if FF_API_AVIO_WRITE_NONCONST
                   int (*write_packet)(void *opaque, uint8_t *buf, int buf_size),
-#else
-                  int (*write_packet)(void *opaque, const uint8_t *buf, int buf_size),
-#endif
                   int64_t (*seek)(void *opaque, int64_t offset, int whence));
 
-/**
- * Wrap a buffer in an AVIOContext for reading.
- */
-void ffio_init_read_context(FFIOContext *s, const uint8_t *buffer, int buffer_size);
-
-/**
- * Wrap a buffer in an AVIOContext for writing.
- */
-void ffio_init_write_context(FFIOContext *s, uint8_t *buffer, int buffer_size);
 
 /**
  * Read size bytes from AVIOContext, returning a pointer.
@@ -123,7 +53,7 @@ void ffio_init_write_context(FFIOContext *s, uint8_t *buffer, int buffer_size);
  */
 int ffio_read_indirect(AVIOContext *s, unsigned char *buf, int size, const unsigned char **data);
 
-void ffio_fill(AVIOContext *s, int b, int64_t count);
+void ffio_fill(AVIOContext *s, int b, int count);
 
 static av_always_inline void ffio_wfourcc(AVIOContext *pb, const uint8_t *s)
 {
@@ -152,6 +82,9 @@ uint64_t ffio_read_varlen(AVIOContext *bc);
  * @return number of bytes read or AVERROR
  */
 int ffio_read_size(AVIOContext *s, unsigned char *buf, int size);
+
+/** @warning must be called before any I/O */
+int ffio_set_buf_size(AVIOContext *s, int buf_size);
 
 /**
  * Reallocate a given buffer for AVIOContext.
@@ -198,14 +131,6 @@ unsigned long ff_crcA001_update(unsigned long checksum, const uint8_t *buf,
 int ffio_open_dyn_packet_buf(AVIOContext **s, int max_packet_size);
 
 /**
- * Return the URLContext associated with the AVIOContext
- *
- * @param s IO context
- * @return pointer to URLContext or NULL.
- */
-struct URLContext *ffio_geturlcontext(AVIOContext *s);
-
-/**
  * Create and initialize a AVIOContext for accessing the
  * resource referenced by the URLContext h.
  * @note When the URLContext h has been opened in read+write mode, the
@@ -216,13 +141,15 @@ struct URLContext *ffio_geturlcontext(AVIOContext *s);
  * @return >= 0 in case of success, a negative value corresponding to an
  * AVERROR code in case of failure
  */
-int ffio_fdopen(AVIOContext **s, struct URLContext *h);
-
+int ffio_fdopen(AVIOContext **s, URLContext *h);
 
 /**
- * Read url related dictionary options from the AVIOContext and write to the given dictionary
+ * Return the URLContext associated with the AVIOContext
+ *
+ * @param s IO context
+ * @return pointer to URLContext or NULL.
  */
-int ffio_copy_url_options(AVIOContext* pb, AVDictionary** avio_opts);
+URLContext *ffio_geturlcontext(AVIOContext *s);
 
 /**
  * Open a write-only fake memory stream. The written data is not stored
@@ -259,38 +186,5 @@ void ffio_reset_dyn_buf(AVIOContext *s);
  * @param s a pointer to an IO context opened by avio_open_dyn_buf()
  */
 void ffio_free_dyn_buf(AVIOContext **s);
-
-struct AVBPrint;
-/**
- * Read a whole line of text from AVIOContext to an AVBPrint buffer overwriting
- * its contents. Stop reading after reaching a \\r, a \\n, a \\r\\n, a \\0 or
- * EOF. The line ending characters are NOT included in the buffer, but they
- * are skipped on the input.
- *
- * @param s the read-only AVIOContext
- * @param bp the AVBPrint buffer
- * @return the length of the read line not including the line endings,
- *         negative on error, or if the buffer becomes truncated.
- */
-int64_t ff_read_line_to_bprint_overwrite(AVIOContext *s, struct AVBPrint *bp);
-
-/**
- * Read a whole null-terminated string of text from AVIOContext to an AVBPrint
- * buffer overwriting its contents. Stop reading after reaching the maximum
- * length, a \\0 or EOF.
- *
- * @param s the read-only AVIOContext
- * @param bp the AVBPrint buffer
- * @param max_len the maximum length to be read from the AVIOContext.
- *                Negative (< 0) values signal that there is no known maximum
- *                length applicable. A maximum length of zero means that the
- *                AVIOContext is not touched, and the function returns
- *                with a read length of zero. In all cases the AVBprint
- *                is cleared.
- * @return the length of the read string not including the terminating null,
- *         negative on error, or if the buffer becomes truncated.
- */
-int64_t ff_read_string_to_bprint_overwrite(AVIOContext *s, struct AVBPrint *bp,
-                                           int64_t max_len);
 
 #endif /* AVFORMAT_AVIO_INTERNAL_H */

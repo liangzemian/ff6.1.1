@@ -103,15 +103,10 @@ eof:
         err = AVERROR(EAGAIN);
     }
 
-    /* Buffer packets with timestamps (there should be at most one per TU)
-     * or any packet if buffer_pkt is empty. The latter is needed to
-     * passthrough positions in case there are no timestamps like with
-     * the raw OBU demuxer. */
-    if (!buffer_pkt->data ||
-        in->pts != AV_NOPTS_VALUE && buffer_pkt->pts == AV_NOPTS_VALUE) {
-        av_packet_unref(buffer_pkt);
+    // Buffer packets with timestamps. There should be at most one per TU, be it split or not.
+    if (!buffer_pkt->data && in->pts != AV_NOPTS_VALUE)
         av_packet_move_ref(buffer_pkt, in);
-    } else
+    else
         av_packet_unref(in);
 
     ff_cbs_fragment_reset(&ctx->frag[ctx->idx]);
@@ -156,12 +151,12 @@ static const enum AVCodecID av1_frame_merge_codec_ids[] = {
     AV_CODEC_ID_AV1, AV_CODEC_ID_NONE,
 };
 
-const FFBitStreamFilter ff_av1_frame_merge_bsf = {
-    .p.name         = "av1_frame_merge",
-    .p.codec_ids    = av1_frame_merge_codec_ids,
+const AVBitStreamFilter ff_av1_frame_merge_bsf = {
+    .name           = "av1_frame_merge",
     .priv_data_size = sizeof(AV1FMergeContext),
     .init           = av1_frame_merge_init,
     .flush          = av1_frame_merge_flush,
     .close          = av1_frame_merge_close,
     .filter         = av1_frame_merge_filter,
+    .codec_ids      = av1_frame_merge_codec_ids,
 };

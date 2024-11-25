@@ -23,7 +23,7 @@
 #include "avformat.h"
 #include "internal.h"
 #include "libavutil/intreadwrite.h"
-#include "libavutil/channel_layout.h"
+#include "libavutil/avassert.h"
 #include "libavutil/internal.h"
 
 #define IMX_TAG MKTAG('I', 'M', 'A', 'X')
@@ -76,7 +76,8 @@ static int simbiosis_imx_read_header(AVFormatContext *s)
     ast->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
     ast->codecpar->codec_tag  = 0;
     ast->codecpar->codec_id   = AV_CODEC_ID_PCM_U8;
-    ast->codecpar->ch_layout  = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
+    ast->codecpar->channels   = 1;
+    ast->codecpar->channel_layout = AV_CH_LAYOUT_MONO;
     ast->codecpar->sample_rate = 22050;
     ast->start_time = 0;
 
@@ -155,7 +156,7 @@ retry:
     return ret;
 }
 
-const AVInputFormat ff_simbiosis_imx_demuxer = {
+AVInputFormat ff_simbiosis_imx_demuxer = {
     .name           = "simbiosis_imx",
     .long_name      = NULL_IF_CONFIG_SMALL("Simbiosis Interactive IMX"),
     .priv_data_size = sizeof(SimbiosisIMXDemuxContext),

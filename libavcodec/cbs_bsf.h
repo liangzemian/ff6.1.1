@@ -19,13 +19,7 @@
 #ifndef AVCODEC_CBS_BSF_H
 #define AVCODEC_CBS_BSF_H
 
-#include "libavutil/log.h"
-#include "libavutil/opt.h"
-
-#include "bsf.h"
-#include "codec_id.h"
 #include "cbs.h"
-#include "packet.h"
 
 
 typedef struct CBSBSFType {
@@ -67,7 +61,7 @@ typedef struct CBSBSFContext {
  *
  * Since it calls the update_fragment() function immediately to deal with
  * extradata, this should be called after any codec-specific setup is done
- * (probably at the end of the FFBitStreamFilter.init function).
+ * (probably at the end of the AVBitStreamFilter.init function).
  */
 int ff_cbs_bsf_generic_init(AVBSFContext *bsf, const CBSBSFType *type);
 
@@ -75,7 +69,7 @@ int ff_cbs_bsf_generic_init(AVBSFContext *bsf, const CBSBSFType *type);
  * Close a generic CBS BSF instance.
  *
  * If no other deinitialisation is required then this function can be used
- * directly as FFBitStreamFilter.close.
+ * directly as AVBitStreamFilter.close.
  */
 void ff_cbs_bsf_generic_close(AVBSFContext *bsf);
 
@@ -88,7 +82,7 @@ void ff_cbs_bsf_generic_close(AVBSFContext *bsf);
  * the same thing to that new extradata to form the output side-data first.
  *
  * If the BSF does not do anything else then this function can be used
- * directly as FFBitStreamFilter.filter.
+ * directly as AVBitStreamFilter.filter.
  */
 int ff_cbs_bsf_generic_filter(AVBSFContext *bsf, AVPacket *pkt);
 
